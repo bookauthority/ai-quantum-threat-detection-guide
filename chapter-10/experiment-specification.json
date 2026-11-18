@@ -1,0 +1,442 @@
+{
+  "experiment_id": "exp-ch10-e2e-quantum-aware-detection-pipeline-v1",
+  "hypothesis": "An end-to-end, event-stream-based quantum-aware detection pipeline with a dedicated online feature store and sidecar-deployed model inference will achieve (a) lower end-to-end alert latency and (b) comparable or better detection quality and (c) higher resilience under quantum-telemetry burst conditions than a simpler batch-oriented pipeline that periodically scores aggregated telemetry in centralized jobs, given the same underlying models and simulator.",
+  "baseline": {
+    "name": "Batch-oriented quantum threat detection pipeline",
+    "description": "A Python-based reference pipeline that reads quantum-network-like telemetry from simulator-generated log files in fixed time batches, computes features offline, runs ML inference in a centralized job, and writes detection results to an alerts store on a schedule.",
+    "architecture": {
+      "data_flow": "Simulator -> Telemetry log files (JSON/Parquet) -> Batch ingestion job -> Batch feature extraction -> Batch model scoring -> Alerts file/DB",
+      "ingestion": "Periodic file-based ingestion using pandas (e.g., every 60 seconds reading new telemetry files from a directory).",
+      "preprocessing": "Batch feature extraction applied over fixed windows (e.g., 60-second windows) using pandas groupby/rolling operations.",
+      "model_serving": "Centralized inference: a single Python process (script or notebook) loading a persisted scikit-learn/PyTorch model and scoring the entire batch.",
+      "deployment_pattern": "Cron-like scheduler or manual invocation; no continuously running service. No feature store; features computed on demand per batch.",
+      "state_management": "Window boundaries and last processed timestamp stored in a simple state file (JSON) in the repository working directory.",
+      "alert_delivery": "Alerts written to a JSONL/CSV file or SQLite database table. No push-based alerting; consumers must poll.",
+      "monitoring": "Basic logging of batch duration and records processed per batch; no continuous health/latency tracking."
+    },
+    "scope": {
+      "sections_covered": [
+        "10.1",
+        "10.2",
+        "10.3",
+        "10.4",
+        "10.5",
+        "10.6",
+        "10.7"
+      ],
+      "dependencies_on_prior_chapters": [
+        "Chapter 6: Simulation environment for generating quantum telemetry",
+        "Chapter 7: Feature definitions and windowing strategy",
+        "Chapter 8/9: Pre-trained baseline/advanced models serialized to disk"
+      ]
+    }
+  },
+  "treatment": {
+    "name": "Streaming-oriented quantum threat detection pipeline with sidecar model serving",
+    "description": "A Python-based streaming pipeline that processes quantum telemetry as an event stream, maintains an online feature store, and performs low-latency inference via a sidecar model-serving process, emitting alerts in near real-time and tracking pipeline health metrics.",
+    "architecture": {
+      "data_flow": "Simulator -> Event stream (in-memory queue or lightweight broker abstraction) -> Streaming ingestion worker -> Incremental feature computation with online store -> Sidecar model inference service (e.g., REST/gRPC over localhost) -> Alerts sink and monitoring endpoints",
+      "ingestion": "Long-running ingestion process consuming from an append-only telemetry stream (simulated via asyncio queue or local message bus abstraction), with per-event or micro-batch processing.",
+      "preprocessing": "Online feature extraction using incremental window maintenance (e.g., sliding windows over last N seconds or last K events per link) backed by an in-memory feature store (e.g., Python dict keyed by link_id).",
+      "model_serving": "Sidecar inference: separate long-running Python service exposing an HTTP/REST endpoint that loads one or more pre-trained models from disk and returns scores/summaries per request.",
+      "deployment_pattern": "Multiple cooperating processes/containers: (1) telemetry stream producer, (2) streaming ingestion/feature worker, (3) sidecar model server, (4) optional metrics exporter.",
+      "state_management": "Explicit feature store and per-link state in RAM with periodic checkpointing to local disk (e.g., pickled state). Support for restart/recovery from last checkpoint.",
+      "alert_delivery": "Alerts emitted as soon as scoring completes, written to (a) JSONL/SQLite like the baseline for comparability, and (b) an HTTP/webhook mock endpoint to mimic SOC/SIEM integration.",
+      "monitoring": "Dedicated metrics collection: per-stage processing latency, queue depth, error counts, alert rate, and basic model-health indicators (e.g., score distributions) exposed via logs and optional HTTP metrics endpoint."
+    },
+    "scope": {
+      "sections_covered": [
+        "10.1",
+        "10.2",
+        "10.3",
+        "10.4",
+        "10.5",
+        "10.6",
+        "10.7"
+      ],
+      "dependencies_on_prior_chapters": [
+        "Chapter 6: Simulator as live telemetry source (stream instead of offline dumps)",
+        "Chapter 7: Online equivalents of feature definitions and windowing",
+        "Chapter 8/9: Same pre-trained models and thresholds as baseline to isolate pipeline effects"
+      ]
+    }
+  },
+  "workloads": [
+    {
+      "name": "WL1-normal-traffic",
+      "description": "Quantum-network-like telemetry representing normal, non-attacked operation with realistic noise, loss, and benign failures over a sustained period.",
+      "pattern": {
+        "duration_simulated_seconds": 1800,
+        "topology": "Single QKD link or small fixed topology (e.g., 3 links) without adversarial events.",
+        "traffic_characteristics": "Stable average key rate with small stochastic fluctuations; QBER within acceptable operational bounds; occasional benign link resets or parameter re-tuning events."
+      },
+      "goals": [
+        "Measure baseline and treatment latency and resource usage under normal conditions.",
+        "Assess false positive rate when no malicious events occur.",
+        "Stress windowing and feature maintenance with low anomaly density."
+      ]
+    },
+    {
+      "name": "WL2-mixed-attacks",
+      "description": "Telemetry including both normal operation and a controlled mix of quantum-specific attack scenarios as defined in the simulator.",
+      "pattern": {
+        "duration_simulated_seconds": 1800,
+        "topology": "Same as WL1 to keep comparability; attacks injected on a subset of links during specified intervals.",
+        "attacks": [
+          "Short-duration intercept-resend episodes with QBER spikes.",
+          "Photon-number-splitting-like behavior with characteristic key-rate vs. QBER anomalies.",
+          "Jamming/DoS resulting in sudden loss spikes and key rate drops.",
+          "Misconfiguration or insider-like events causing parameter drift."
+        ],
+        "attack_labeling": "Each attack episode annotated in simulator output with attack_type, start_time, end_time, and affected_link_ids."
+      },
+      "goals": [
+        "Compare detection latency from attack onset to first alert.",
+        "Measure detection quality (precision, recall, F1) for the same model across pipeline architectures.",
+        "Observe stability of the streaming feature store under changing regimes."
+      ]
+    },
+    {
+      "name": "WL3-burst-and-failure-resilience",
+      "description": "Telemetry with high-burst conditions and induced component failures to evaluate resilience of each pipeline design.",
+      "pattern": {
+        "duration_simulated_seconds": 1200,
+        "topology": "Same as WL1/WL2; at least one high-traffic link generating bursts of events.",
+        "bursts": "Short intervals with 5\u201310x normal telemetry rate (e.g., high-frequency channel metrics, alarms) to stress ingestion throughput and queues.",
+        "failures": [
+          "Temporary simulator pause or spike in write rate.",
+          "Forced restart of pipeline components (e.g., kill and restart model server) to evaluate recovery behavior."
+        ],
+        "attacks": "Optionally include a subset of attack scenarios overlapping burst periods to see if detection degrades under stress."
+      },
+      "goals": [
+        "Measure sustained throughput and maximum tolerable burst rate before backlog or data loss.",
+        "Quantify resilience metrics such as time to recover after a component restart and proportion of telemetry processed vs. dropped.",
+        "Check whether detection latency and quality degrade significantly during and after burst periods."
+      ]
+    }
+  ],
+  "controls": {
+    "data_and_model_controls": {
+      "simulator_version": "Pinned git commit hash or tagged release from Chapter 6 in the companion repository.",
+      "dataset_schema": "Identical telemetry and feature schemas for baseline and treatment; streaming pipeline must derive features that are numerically equivalent (within tolerance) to batch features when aggregated over the same time windows.",
+      "models": "Same serialized model artifacts (e.g., scikit-learn .joblib or PyTorch .pt files) used by both pipelines. No retraining during this experiment.",
+      "thresholds": "Common decision thresholds (e.g., anomaly-score cutoffs, classification thresholds) configured identically in batch and streaming inferences."
+    },
+    "execution_controls": {
+      "hardware": "Run baseline and treatment on the same physical or virtual machine type (e.g., 4 vCPUs, 8 GB RAM) with no competing heavy workloads.",
+      "software_environment": "Identical Python version and library versions (NumPy, pandas, scikit-learn, PyTorch, etc.) as specified in required_environment.",
+      "run_order": "Randomize or alternate the order of baseline and treatment runs for each workload (e.g., ABBA) to reduce temporal/systematic bias.",
+      "repetitions": "At least 3 full repetitions per (pipeline, workload) pair to estimate variance in metrics; reset simulator seeds and pipeline state between repetitions."
+    },
+    "configuration_controls": {
+      "window_definitions": "Use the same time-window sizes and step sizes (e.g., 10-second sliding windows with 5-second step) in both pipelines; the streaming system must implement the same logical windows using event timestamps.",
+      "alert_schema": "Alerts must include at minimum: timestamp, link_id, attack_type_predicted (if applicable), anomaly_score, model_name, pipeline_id (baseline or treatment), workload_id, run_id.",
+      "logging": "Enable structured logging with a common format (e.g., JSONL) for both pipelines to facilitate automatic extraction of timing and health metrics."
+    }
+  },
+  "metrics": [
+    {
+      "name": "end_to_end_alert_latency_p50",
+      "description": "Median time from an underlying event of interest (e.g., first telemetry event inside an attack window or window boundary timestamp) to the corresponding alert emission timestamp.",
+      "unit": "milliseconds"
+    },
+    {
+      "name": "end_to_end_alert_latency_p95",
+      "description": "95th percentile of event-to-alert latency across all relevant alerts in a run.",
+      "unit": "milliseconds"
+    },
+    {
+      "name": "throughput_events_per_second",
+      "description": "Number of telemetry events successfully ingested and processed (i.e., passed through feature extraction) per second of wall-clock time during steady-state operation.",
+      "unit": "events/second"
+    },
+    {
+      "name": "alert_precision",
+      "description": "Fraction of emitted alerts that correspond to true attack intervals as labeled by the simulator (TP / (TP + FP)).",
+      "unit": "dimensionless"
+    },
+    {
+      "name": "alert_recall",
+      "description": "Fraction of attack intervals for which the pipeline emitted at least one correctly aligned alert (TP / (TP + FN)).",
+      "unit": "dimensionless"
+    },
+    {
+      "name": "alert_f1_score",
+      "description": "Harmonic mean of alert_precision and alert_recall, aggregated over all attack intervals in a workload run.",
+      "unit": "dimensionless"
+    },
+    {
+      "name": "false_positive_rate_per_hour",
+      "description": "Number of alerts emitted during periods labeled as normal-only per hour of simulated time.",
+      "unit": "alerts/hour"
+    },
+    {
+      "name": "resource_cpu_utilization_mean",
+      "description": "Average CPU utilization across all pipeline processes during the run.",
+      "unit": "percent"
+    },
+    {
+      "name": "resource_memory_footprint_peak",
+      "description": "Peak resident memory usage across all pipeline processes during the run.",
+      "unit": "megabytes"
+    },
+    {
+      "name": "resilience_recovery_time",
+      "description": "Time from an induced failure (e.g., restarting the model sidecar) to restoration of normal processing rate and successful inference.",
+      "unit": "seconds"
+    },
+    {
+      "name": "telemetry_loss_rate",
+      "description": "Fraction of simulator-emitted telemetry events that were not processed (e.g., dropped due to overflow or failures).",
+      "unit": "dimensionless"
+    }
+  ],
+  "success_criteria": {
+    "primary": [
+      {
+        "criterion": "Latency improvement",
+        "definition": "For WL2-mixed-attacks, the treatment pipeline must achieve at least 2x lower median end_to_end_alert_latency_p50 compared to the baseline (treatment <= 0.5 * baseline), with non-overlapping 95% confidence intervals across repetitions where feasible."
+      },
+      {
+        "criterion": "Detection quality parity or better",
+        "definition": "For WL2-mixed-attacks, treatment alert_f1_score must be within 2 percentage points of baseline or higher (treatment_f1 >= baseline_f1 - 0.02), and alert_recall must not be worse by more than 5 percentage points."
+      }
+    ],
+    "secondary": [
+      {
+        "criterion": "Resilience under burst load",
+        "definition": "For WL3-burst-and-failure-resilience, treatment telemetry_loss_rate must be less than or equal to baseline, and resilience_recovery_time must not exceed baseline by more than 20%."
+      },
+      {
+        "criterion": "Operational overhead",
+        "definition": "For WL1-normal-traffic, treatment resource_cpu_utilization_mean should not exceed baseline by more than an absolute 25 percentage points, or if it does, the latency and resilience improvements must clearly justify the overhead (to be qualitatively discussed in the chapter)."
+      }
+    ],
+    "interpretation_guidelines": [
+      "If latency improvements are substantial but detection quality significantly degrades, the streaming design should be revised (e.g., feature store, window handling) before recommending it as the primary pattern.",
+      "If detection quality is significantly better in the streaming pipeline without unacceptable resource overhead, the treatment architecture should be presented as the recommended pattern for real-time deployments.",
+      "If results are mixed or inconclusive across workloads, document trade-offs explicitly and propose scenarios where each pipeline type is more appropriate (e.g., research vs. production SOC integration)."
+    ]
+  },
+  "failure_modes": [
+    {
+      "name": "Windowing_mismatch_between_pipelines",
+      "description": "Differences in how windows are constructed in batch vs. streaming lead to systematically different features and unfair comparisons of latency and detection quality.",
+      "detection": "Post-run validation comparing feature aggregates for identical time windows computed both online and offline; significant numeric discrepancies indicate mismatch.",
+      "mitigation": "Implement a shared windowing library with common parameters and unit tests; ensure both pipelines invoke the same functions for window boundary computation and aggregation."
+    },
+    {
+      "name": "Clock_and_timestamp_inconsistencies",
+      "description": "Use of wall-clock timestamps instead of simulator or event timestamps causes inaccurate latency measurements and misalignment between attacks and alerts.",
+      "detection": "Check logs for differences between event.timestamp (sim time) and processing timestamps; large drifts or negative latencies are red flags.",
+      "mitigation": "Standardize on simulator-provided timestamps for defining event time; store both event_time and processing_time in logs and derive latency from the difference."
+    },
+    {
+      "name": "Backpressure_and_unbounded_queue_growth",
+      "description": "Streaming pipeline cannot keep up with burst workloads, leading to large queues, increased latency, or OOM failures.",
+      "detection": "Monitor queue depth, processing lag, and memory usage; detect when queue exceeds a configured high-water mark.",
+      "mitigation": "Implement backpressure strategies (e.g., dropping oldest non-critical telemetry, adaptive sampling) and document trade-offs; scale ingestion/processing concurrency where possible within resource limits."
+    },
+    {
+      "name": "Inconsistent_model_loading_or_configuration",
+      "description": "Baseline and treatment pipelines load different model versions, thresholds, or preprocessing steps, invalidating comparison.",
+      "detection": "Log model artifact paths, checksums, and configuration (e.g., threshold values) at startup; verify equality across pipelines before runs.",
+      "mitigation": "Centralize model artifacts and configuration in a shared directory with versioned manifests; add a pre-run validation script that compares configurations."
+    },
+    {
+      "name": "State_loss_on_restart_in_streaming_pipeline",
+      "description": "On component restart (e.g., model server), streaming pipeline loses feature store state, causing degraded detection or spikes in false positives/negatives.",
+      "detection": "Observe abrupt changes in alert rate or score distributions immediately after restarts; check logs for missing or reinitialized state.",
+      "mitigation": "Implement periodic state checkpointing and restoration; simulate restarts during WL3 to validate behavior; document recommended restart strategies."
+    },
+    {
+      "name": "Non_reproducible_experiment_runs",
+      "description": "Uncontrolled randomness (e.g., random seeds in simulator shuffling) causes high variance across runs, making results unstable.",
+      "detection": "Large variation in metrics (e.g., >10\u201315 percentage points in F1) across nominally identical repetitions.",
+      "mitigation": "Fix and record random seeds for simulator and any stochastic components; use deterministic modes where available; log seeds and configuration in each run's metadata."
+    }
+  ],
+  "required_environment": {
+    "hardware": {
+      "cpu": "64-bit x86_64 or ARM CPU with at least 4 logical cores",
+      "memory_gb": 8,
+      "disk_space_gb": 10
+    },
+    "os": [
+      "Linux (Ubuntu 20.04+ or equivalent)",
+      "macOS 12+",
+      "Windows 10/11 (via WSL2 recommended for consistency)"
+    ],
+    "software": {
+      "python": "Python 3.10.x",
+      "libraries": {
+        "numpy": ">=1.24,<1.27",
+        "pandas": ">=2.0,<2.3",
+        "scikit_learn": ">=1.3,<1.6",
+        "pytorch": ">=2.1,<2.3",
+        "uvicorn_or_flask_or_fastapi": "For implementing the sidecar model server (choose one and pin version, e.g., fastapi>=0.110,<0.120, uvicorn>=0.22,<0.29)",
+        "pyyaml": ">=6.0,<7.0",
+        "click_or_typer": "For CLI orchestration (optional but recommended)."
+      },
+      "tools": {
+        "git": "Installed and configured for cloning the repository.",
+        "make_or_task_runner": "Optional; for standardized experiment commands, e.g., Makefile or nox."
+      }
+    },
+    "repository_structure": {
+      "root_url": "https://github.com/bookauthority/ai-quantum-threat-detection-guide",
+      "paths": {
+        "simulator": "src/simulation/",
+        "data_pipelines": "src/data_pipeline/",
+        "models": "models/",
+        "experiments_ch10": "experiments/ch10_e2e_pipeline/",
+        "notebooks": "notebooks/ch10/"
+      }
+    }
+  },
+  "run_instructions": {
+    "setup": [
+      "1. Clone the repository: git clone https://github.com/bookauthority/ai-quantum-threat-detection-guide.git",
+      "2. Change directory: cd ai-quantum-threat-detection-guide",
+      "3. Create and activate a Python 3.10 virtual environment (e.g., python3.10 -m venv .venv && source .venv/bin/activate).",
+      "4. Install dependencies: pip install -r requirements.txt (ensure versions match required_environment).",
+      "5. Verify simulator and model artifacts exist by running provided smoke tests: python -m src.simulation.smoke_test and python -m experiments.common.verify_models."
+    ],
+    "configuration": [
+      "1. Navigate to experiments/ch10_e2e_pipeline/.",
+      "2. Copy the default configuration template: cp configs/ch10_default.yaml configs/ch10_local.yaml.",
+      "3. In configs/ch10_local.yaml, set:",
+      "   - simulator.seed to a fixed integer for reproducibility (e.g., 12345).",
+      "   - workloads to include WL1, WL2, WL3 with specified durations and attack schedules.",
+      "   - model.artifact_path to the serialized baseline model file in models/.",
+      "   - window.size_seconds and window.step_seconds to the values used in Chapter 7.",
+      "   - pipeline.baseline and pipeline.treatment sections with ports, queue sizes, and alert sinks.",
+      "4. Ensure paths for logs, metrics, and alerts (e.g., outputs/ch10/...) are writable."
+    ],
+    "baseline_pipeline_run": [
+      "1. From experiments/ch10_e2e_pipeline/, run the baseline for each workload:",
+      "   - Example: python run_experiment.py --config configs/ch10_local.yaml --pipeline baseline --workload WL1 --runs 3",
+      "   - Repeat for WL2 and WL3.",
+      "2. The baseline script should:",
+      "   - Invoke the simulator in batch-output mode to generate telemetry files under outputs/ch10/telemetry/WLx/baseline/run_y/.",
+      "   - Execute the batch ingestion + feature extraction + model scoring job for each batch interval.",
+      "   - Write alerts to outputs/ch10/alerts/baseline/WLx/run_y/alerts.jsonl.",
+      "   - Record run-level metadata and metrics to outputs/ch10/metrics/baseline/WLx/run_y/metrics.json.",
+      "3. Confirm that logs indicate successful processing of all simulator events, and that at least some alerts were generated for WL2 and WL3 if attacks were configured."
+    ],
+    "treatment_pipeline_run": [
+      "1. Start the sidecar model server in a separate terminal:",
+      "   - Example: python src/model_server/serve.py --config configs/model_server.yaml",
+      "   - Verify it listens on the configured localhost port and logs successful model loading.",
+      "2. In another terminal, start the streaming ingestion/feature worker:",
+      "   - Example: python src/pipeline/streaming_ingest.py --config configs/ch10_local.yaml --workload WL1 --runs 3",
+      "3. The treatment script should:",
+      "   - Run the simulator in streaming mode, pushing telemetry events to an in-memory queue or local broker abstraction.",
+      "   - Maintain per-link sliding windows and compute features incrementally, storing them in the feature store.",
+      "   - Call the sidecar model server for inference as new windows close or thresholds are met.",
+      "   - Emit alerts to outputs/ch10/alerts/treatment/WLx/run_y/alerts.jsonl and to a mock HTTP endpoint (if configured).",
+      "   - Collect latency, throughput, queue depth, and resource metrics, storing them in outputs/ch10/metrics/treatment/WLx/run_y/metrics.json.",
+      "4. For WL3, trigger controlled component restarts (e.g., via a script or CLI flag) to test recovery behavior.",
+      "5. Repeat for WL2 and WL3 with runs=3 each."
+    ],
+    "post_processing_and_analysis": [
+      "1. After all runs complete, execute the analysis script to compute experiment metrics and generate summary tables:",
+      "   - Example: python analyze_results.py --input_dir outputs/ch10 --output_dir outputs/ch10/summary",
+      "2. The analysis script should:",
+      "   - Parse telemetry logs (if needed), alerts.jsonl, and metrics.json files for each (pipeline, workload, run) combination.",
+      "   - Compute all defined metrics (latency, precision, recall, F1, resource usage, resilience) per run.",
+      "   - Aggregate metrics across runs (e.g., mean, standard deviation, confidence intervals).",
+      "   - Output structured summary files, e.g., outputs/ch10/summary/metrics_aggregated.json and metrics_aggregated.csv.",
+      "3. Verify that feature consistency checks pass (e.g., streaming vs. batch window aggregates are within tolerance).",
+      "4. Use notebooks in notebooks/ch10/ (e.g., ch10_pipeline_comparison.ipynb) to visualize key comparisons, such as latency CDFs and F1 vs. workload, for interpretation in the chapter text."
+    ]
+  },
+  "evidence_schema": {
+    "run_metadata": {
+      "fields": {
+        "experiment_id": "String; must match 'exp-ch10-e2e-quantum-aware-detection-pipeline-v1'.",
+        "pipeline_id": "Enum; one of ['baseline', 'treatment'].",
+        "workload_id": "Enum; one of ['WL1-normal-traffic', 'WL2-mixed-attacks', 'WL3-burst-and-failure-resilience'].",
+        "run_id": "String; unique identifier per pipeline/workload repetition (e.g., 'run_001').",
+        "timestamp_start_utc": "ISO 8601 string; wall-clock start time of the run.",
+        "timestamp_end_utc": "ISO 8601 string; wall-clock end time of the run.",
+        "simulator_config_hash": "String; hash of the simulator configuration used (e.g., SHA256).",
+        "model_artifact_hash": "String; hash of the loaded model file.",
+        "random_seed": "Integer; seed used for simulator and stochastic components.",
+        "environment_fingerprint": "Object; includes OS, CPU info, Python and library versions."
+      }
+    },
+    "per_run_metrics": {
+      "fields": {
+        "end_to_end_alert_latency_p50_ms": "Float; computed over all relevant alerts in the run.",
+        "end_to_end_alert_latency_p95_ms": "Float.",
+        "throughput_events_per_second": "Float; average over run duration.",
+        "alert_precision": "Float between 0 and 1.",
+        "alert_recall": "Float between 0 and 1.",
+        "alert_f1_score": "Float between 0 and 1.",
+        "false_positive_rate_per_hour": "Float; alerts/hour.",
+        "resource_cpu_utilization_mean_percent": "Float; mean across processes.",
+        "resource_memory_footprint_peak_mb": "Float.",
+        "resilience_recovery_time_seconds": "Float or null if no induced failure; measured in WL3.",
+        "telemetry_loss_rate": "Float between 0 and 1.",
+        "notes": "Optional string; manual annotations about anomalies or issues during the run."
+      }
+    },
+    "alert_record": {
+      "fields": {
+        "alert_id": "String; unique identifier for the alert.",
+        "pipeline_id": "String; 'baseline' or 'treatment'.",
+        "workload_id": "String; workload name.",
+        "run_id": "String; run identifier.",
+        "event_time": "ISO 8601 or numeric timestamp corresponding to the underlying window or event.",
+        "alert_time": "ISO 8601 or numeric timestamp when the alert was emitted.",
+        "link_id": "String; identifier of the affected quantum link or channel.",
+        "anomaly_score": "Float; model-specific anomaly or confidence score.",
+        "attack_type_predicted": "String or null; predicted attack class label, if applicable.",
+        "model_name": "String; identifier of the model used.",
+        "decision_threshold": "Float; threshold applied to generate this alert.",
+        "is_true_positive": "Boolean; derived by aligning with simulator ground truth.",
+        "matched_attack_type": "String or null; actual attack type from simulator if within an attack interval.",
+        "latency_ms": "Float; derived as alert_time - event_time in milliseconds."
+      }
+    },
+    "attack_ground_truth": {
+      "fields": {
+        "attack_id": "String; unique identifier.",
+        "workload_id": "String; workload name.",
+        "run_id": "String; run identifier.",
+        "attack_type": "String; e.g., 'intercept_resend', 'pns', 'jamming', 'misconfiguration'.",
+        "link_id": "String; affected link.",
+        "start_time": "Timestamp; simulator/time domain.",
+        "end_time": "Timestamp; simulator/time domain.",
+        "severity": "Optional string; qualitative severity level."
+      }
+    },
+    "feature_consistency_checks": {
+      "fields": {
+        "window_id": "String; composed from link_id and window_start/end.",
+        "link_id": "String.",
+        "window_start_time": "Timestamp.",
+        "window_end_time": "Timestamp.",
+        "feature_name": "String.",
+        "baseline_value": "Float; feature value from batch pipeline.",
+        "treatment_value": "Float; feature value from streaming pipeline (when re-computed offline for the same window).",
+        "relative_difference": "Float; |baseline - treatment| / max(|baseline|, epsilon).",
+        "within_tolerance": "Boolean; true if relative_difference <= configured tolerance (e.g., 1e-5)."
+      }
+    },
+    "aggregation_summary": {
+      "fields": {
+        "pipeline_id": "String.",
+        "workload_id": "String.",
+        "metric_name": "String; one of metrics.name.",
+        "mean": "Float; mean across runs.",
+        "std_dev": "Float; standard deviation across runs.",
+        "ci_95_lower": "Float; lower bound of 95% confidence interval (if computed).",
+        "ci_95_upper": "Float; upper bound of 95% confidence interval (if computed).",
+        "num_runs": "Integer; number of runs included."
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+Run the experiment from the repository root with:
+
+  python run.py
+
+This writes /evidence/results.json (or $BOOKMAS_EVIDENCE_DIR/results.json if
+BOOKMAS_EVIDENCE_DIR is set) following the required schema.
+
+Run tests with:
+
+  python -m unittest discover -s tests -p "test_*.py"

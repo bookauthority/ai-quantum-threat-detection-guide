@@ -1,0 +1,804 @@
+{
+  "experiment_id": "exp-09-advanced-temporal-hybrid-modeling",
+  "hypothesis": "Advanced temporal and hybrid models that explicitly capture quantum\u2013classical temporal dynamics (sequence models, autoencoders/VAEs, graph-based context, and hybrid anomaly+supervised stacks) will achieve significantly better attack/anomaly detection performance on quantum-network-like telemetry than the baseline models from Chapter 8, for comparable or acceptable increases in computational and latency overhead suitable for near-real-time deployment.",
+  "baseline": {
+    "description": "Baseline models trained in Chapter 8 on the same quantum-network-like datasets, using non-temporal or weakly-temporal classical ML approaches.",
+    "models": [
+      {
+        "name": "IForest-Static",
+        "type": "Unsupervised anomaly detection",
+        "algorithm": "IsolationForest (scikit-learn)",
+        "input_representation": "Per-window aggregated feature vectors over quantum and classical metrics (e.g., means, variances, simple deltas for QBER, key rate, loss), flattened; no explicit sequence structure.",
+        "training_target": "Normal-only training (unlabeled or majority-normal data) with anomaly scores at inference.",
+        "hyperparameters": {
+          "n_estimators": 200,
+          "max_samples": "auto",
+          "contamination": 0.01,
+          "max_features": 1.0,
+          "random_state": 42
+        }
+      },
+      {
+        "name": "RF-Static",
+        "type": "Supervised attack classification",
+        "algorithm": "RandomForestClassifier (scikit-learn)",
+        "input_representation": "Same per-window aggregated features as IForest-Static.",
+        "training_target": "Multi-class labels indicating {benign, eavesdropping, jamming, misconfiguration, other attack} at window level.",
+        "hyperparameters": {
+          "n_estimators": 300,
+          "max_depth": null,
+          "min_samples_split": 2,
+          "min_samples_leaf": 1,
+          "class_weight": "balanced",
+          "random_state": 42
+        }
+      }
+    ],
+    "reference_data": {
+      "source": "Chapter 6\u20137 simulation and dataset pipelines",
+      "dataset_location": "data/ch08_baseline/",
+      "splits": [
+        "train",
+        "val",
+        "test"
+      ]
+    }
+  },
+  "treatment": {
+    "description": "Advanced temporal and hybrid models designed to capture fine-grained temporal behavior, rare event structure, and graph/topological context in quantum networks, and to fuse unsupervised anomaly scores with supervised classifiers.",
+    "models": [
+      {
+        "name": "TCN-Seq",
+        "goal_section": "9.2",
+        "type": "Sequence model for quantum telemetry",
+        "algorithm": "Temporal Convolutional Network (TCN) implemented in PyTorch",
+        "input_representation": "Fixed-length sequences of per-timestep feature vectors (e.g., 60 time steps \u00d7 F features, where each step corresponds to a small time-slice from the simulator). Features include quantum metrics (QBER, sifted key rate, channel loss, timing variance) and synchronized classical metrics (link utilization, control-plane error counts, alarms).",
+        "training_target": "Sequence-level prediction indicating whether the window contains an attack or anomaly; optionally finer-grained timestep-level labels for auxiliary loss.",
+        "key_hyperparameters": {
+          "sequence_length": 60,
+          "num_channels": [
+            64,
+            64,
+            128
+          ],
+          "kernel_size": 3,
+          "dropout": 0.1,
+          "learning_rate": 0.001,
+          "batch_size": 128,
+          "optimizer": "Adam",
+          "epochs": 30,
+          "early_stopping_patience": 5
+        }
+      },
+      {
+        "name": "LSTM-Seq",
+        "goal_section": "9.2",
+        "type": "Sequence model for quantum telemetry",
+        "algorithm": "Bidirectional LSTM implemented in PyTorch",
+        "input_representation": "Same as TCN-Seq: sequences of per-timestep quantum+classical features.",
+        "training_target": "Sequence-level binary/multi-class classification for attack vs. benign, optionally attack type.",
+        "key_hyperparameters": {
+          "sequence_length": 60,
+          "hidden_size": 128,
+          "num_layers": 2,
+          "bidirectional": true,
+          "dropout": 0.2,
+          "learning_rate": 0.001,
+          "batch_size": 64,
+          "optimizer": "Adam",
+          "epochs": 30,
+          "early_stopping_patience": 5
+        }
+      },
+      {
+        "name": "AE-Window",
+        "goal_section": "9.3",
+        "type": "Autoencoder for rare event detection",
+        "algorithm": "Fully connected autoencoder implemented in PyTorch",
+        "input_representation": "Per-window aggregated feature vectors (same dimensionality as baselines) using only windows labeled as benign for training.",
+        "training_target": "Reconstruction of input; anomaly score derived from reconstruction error.",
+        "key_hyperparameters": {
+          "encoder_layers": [
+            128,
+            64,
+            16
+          ],
+          "decoder_layers": [
+            64,
+            128
+          ],
+          "activation": "ReLU",
+          "bottleneck_dim": 16,
+          "learning_rate": 0.0005,
+          "batch_size": 256,
+          "epochs": 50,
+          "early_stopping_patience": 7
+        }
+      },
+      {
+        "name": "VAE-Window",
+        "goal_section": "9.3",
+        "type": "Variational autoencoder for rare event detection",
+        "algorithm": "VAE implemented in PyTorch with Gaussian latent variables",
+        "input_representation": "Same per-window aggregated features as AE-Window.",
+        "training_target": "Variational reconstruction objective (reconstruction loss + KL divergence); anomaly score using negative ELBO or reconstruction error.",
+        "key_hyperparameters": {
+          "latent_dim": 8,
+          "encoder_layers": [
+            128,
+            64
+          ],
+          "decoder_layers": [
+            64,
+            128
+          ],
+          "activation": "ReLU",
+          "beta": 1.0,
+          "learning_rate": 0.0005,
+          "batch_size": 256,
+          "epochs": 80,
+          "early_stopping_patience": 10
+        }
+      },
+      {
+        "name": "Hybrid-IForest-RF",
+        "goal_section": "9.4",
+        "type": "Hybrid unsupervised+supervised model",
+        "algorithm": "Pipeline combining IForest anomaly scores and RF classifier",
+        "input_representation": "Per-window aggregated features plus appended unsupervised anomaly scores (from IForest or AE/VAE) as additional features to a supervised classifier.",
+        "training_target": "Supervised multi-class classification over attacks and benign, with class imbalance handling.",
+        "key_hyperparameters": {
+          "unsupervised_component": "IsolationForest or AE-Window anomaly score",
+          "supervised_component": "GradientBoostingClassifier or RandomForest with tuned depth",
+          "calibration": "Platt scaling or isotonic regression on validation set",
+          "class_weight": "balanced"
+        }
+      },
+      {
+        "name": "Graph-Context-GCN",
+        "goal_section": "9.5",
+        "type": "Graph-based contextual model",
+        "algorithm": "Graph Convolutional Network (GCN) or GraphSAGE implemented using PyTorch Geometric",
+        "input_representation": "Time-sliced quantum network graphs where nodes represent network elements (QKD links, trusted nodes, repeaters, classical routers) with node feature vectors (local quantum/classical metrics aggregated over a short interval), and edges represent physical or logical connectivity with edge features (link-specific metrics).",
+        "training_target": "Node-level or edge-level binary labels indicating presence of anomalous/attacked behavior in that time slice; optionally aggregated to sequence-level decision for the entire path or link.",
+        "key_hyperparameters": {
+          "num_layers": 3,
+          "hidden_dim": 64,
+          "dropout": 0.2,
+          "learning_rate": 0.001,
+          "batch_size": 32,
+          "epochs": 40,
+          "early_stopping_patience": 7,
+          "readout": "global_mean_pool or node-wise logits"
+        }
+      },
+      {
+        "name": "Latency-Optimized-TCN-Lite",
+        "goal_section": "9.7",
+        "type": "Reduced-complexity temporal model",
+        "algorithm": "Shallower TCN or 1D CNN sequence classifier implemented in PyTorch",
+        "input_representation": "Shorter sequences (e.g., 20 time steps) and reduced feature set focusing on most informative quantum metrics.",
+        "training_target": "Binary detection (attack vs. benign) optimized for inference latency and CPU-only deployment.",
+        "key_hyperparameters": {
+          "sequence_length": 20,
+          "num_channels": [
+            32,
+            32
+          ],
+          "kernel_size": 3,
+          "dropout": 0.1,
+          "learning_rate": 0.001,
+          "batch_size": 256,
+          "epochs": 20
+        }
+      }
+    ]
+  },
+  "workloads": [
+    {
+      "name": "WL-1-SingleLink-Temporal-Attacks",
+      "description": "Simulated single QKD link with temporally localized attacks and failures to emphasize time dynamics.",
+      "data_source": "Chapter 6 simulator (Python) configured for a single logical QKD link with classical control channel.",
+      "configuration": {
+        "duration_simulated": "48h equivalent",
+        "time_resolution": "1s timesteps",
+        "channels": [
+          "Single BB84-like QKD link with decoy states"
+        ],
+        "attack_scenarios": [
+          {
+            "type": "intercept_resend_eavesdropping",
+            "pattern": "short bursts (5\u201310 min) at random times",
+            "parameters": {
+              "qber_increase": "from baseline ~1\u20132% to 6\u201310%",
+              "key_rate_drop": "10\u201330%",
+              "loss_change": "small"
+            }
+          },
+          {
+            "type": "photon_number_splitting_like_effect",
+            "pattern": "gradual onset and long-lived (hours)",
+            "parameters": {
+              "qber_increase": "slight 1\u20133% above baseline",
+              "key_rate_drop": "20\u201340%",
+              "loss_change": "moderate"
+            }
+          },
+          {
+            "type": "jamming_dos",
+            "pattern": "abrupt changes, short extreme episodes",
+            "parameters": {
+              "qber_increase": "above 15%",
+              "key_rate_drop": "above 80%",
+              "loss_change": "severe"
+            }
+          }
+        ],
+        "benign_failures": [
+          {
+            "type": "fiber_attenuation_spike",
+            "pattern": "transient 5\u201310 min",
+            "effect": "loss increase, moderate key rate drop, minimal QBER impact"
+          },
+          {
+            "type": "temperature_drift",
+            "pattern": "slow drift over hours",
+            "effect": "small correlated variations in QBER, loss, and timing"
+          }
+        ]
+      },
+      "dataset_preparation": {
+        "windowing": {
+          "sequence_length": 60,
+          "stride": 10,
+          "timestep_features": [
+            "qber",
+            "key_rate",
+            "photon_detection_rate",
+            "channel_loss_db",
+            "timing_jitter",
+            "classical_link_utilization",
+            "control_plane_error_count",
+            "alarm_flags"
+          ]
+        },
+        "labels": "Window or sequence labeled attack type if any timestep overlaps attack interval; otherwise benign.",
+        "splits": {
+          "train": "First 60% of timeline with attacks restricted to defined windows",
+          "val": "Next 20% of timeline with a mix of known attacks and benign drifts",
+          "test": "Last 20% of timeline containing unseen combinations and timings of attacks/failures"
+        },
+        "target_dir": "data/ch09/wl1_single_link_temporal/"
+      }
+    },
+    {
+      "name": "WL-2-MultiLink-Topology-Context",
+      "description": "Simulated small quantum network (3\u20138 QKD links, 2\u20134 trusted nodes, classical backbone) to test topology-aware detection.",
+      "data_source": "Chapter 6 simulator extended to multi-link scenario with network topology and routing.",
+      "configuration": {
+        "topology": "Small meshed topology with at least one redundant path between endpoints and a mix of direct QKD links and repeater-based paths.",
+        "duration_simulated": "72h equivalent",
+        "time_resolution": "5s timesteps",
+        "attack_scenarios": [
+          {
+            "type": "distributed_jamming",
+            "pattern": "simultaneous partial jamming on multiple adjacent links to mimic wide-area interference",
+            "targets": "two neighboring QKD links sharing a trusted node",
+            "effect": "correlated changes across nodes and edges"
+          },
+          {
+            "type": "insider_node_misconfiguration",
+            "pattern": "persistent misconfiguration at a trusted node causing abnormal routing or key usage",
+            "effect": "anomalous patterns localized to node and adjacent edges"
+          }
+        ],
+        "benign_variation": [
+          {
+            "type": "load_balancing_events",
+            "effect": "changes in classical utilization without quantum anomalies"
+          },
+          {
+            "type": "scheduled_maintenance",
+            "effect": "temporary shutdown of one link with clean alarms"
+          }
+        ]
+      },
+      "dataset_preparation": {
+        "graph_slices": {
+          "interval": "60s",
+          "features": {
+            "node_features": [
+              "avg_qber",
+              "avg_key_rate",
+              "avg_loss_db",
+              "avg_timing_jitter",
+              "local_alarm_count",
+              "classical_cpu_load",
+              "classical_link_utilization"
+            ],
+            "edge_features": [
+              "link_qber",
+              "link_key_rate",
+              "link_loss_db",
+              "link_alarm_flags"
+            ]
+          },
+          "labels": "Node or edge labeled anomalous if part of an attack scenario within the slice; benign otherwise."
+        },
+        "splits": {
+          "train": "Random 60% of graph slices, ensuring at least 30% of benign-only slices",
+          "val": "20% of slices, disjoint time ranges from train",
+          "test": "20% of slices including unseen combinations of attacks and benign patterns"
+        },
+        "target_dir": "data/ch09/wl2_multilink_graph/"
+      }
+    },
+    {
+      "name": "WL-3-Rare-Attack-Events",
+      "description": "Dataset with extreme class imbalance and rare, subtle attack patterns to test autoencoders/VAEs and hybrid stacks.",
+      "data_source": "Chapter 6 simulator with attack frequency tuned to reflect rare events.",
+      "configuration": {
+        "duration_simulated": "168h equivalent (1 week)",
+        "time_resolution": "10s timesteps",
+        "attack_frequency": "attack windows < 1% of total time overall",
+        "attack_scenarios": [
+          {
+            "type": "low_snr_eavesdropping",
+            "pattern": "minimal QBER increase but subtle changes in joint distribution of key rate and timing jitter",
+            "visibility": "difficult for simple thresholds"
+          },
+          {
+            "type": "slow_key_rate_poisoning",
+            "pattern": "small persistent drifts causing downstream key management anomalies"
+          }
+        ],
+        "benign_background": "Diverse benign conditions including variable classical load, environmental noise, and normal maintenance."
+      },
+      "dataset_preparation": {
+        "windowing": {
+          "window_size": 120,
+          "stride": 30,
+          "features": [
+            "aggregated_statistics_over_window (mean, std, min, max) for all primary quantum and classical metrics",
+            "trend_features (slope estimates) for qber and key_rate",
+            "event_counts (alarms, control errors)"
+          ]
+        },
+        "labels": "Binary rare-event indicator per window; separate multi-class label where possible for analyses.",
+        "splits": {
+          "train": "Normal-only windows (no attack overlap) for AE/VAE; for hybrid classifiers, include slightly more positives but still imbalanced, e.g., 1\u20132% positive class.",
+          "val": "Mixture with approx. 5% positive windows to support threshold tuning.",
+          "test": "Natural class distribution from simulator (~1% attack windows)."
+        },
+        "target_dir": "data/ch09/wl3_rare_events/"
+      }
+    }
+  ],
+  "controls": {
+    "data_generation": {
+      "simulator_version": "ch06-sim==1.0.0",
+      "random_seed": 42,
+      "config_files": [
+        "configs/ch09/wl1_single_link.yaml",
+        "configs/ch09/wl2_multilink_graph.yaml",
+        "configs/ch09/wl3_rare_events.yaml"
+      ]
+    },
+    "preprocessing": {
+      "python_version": "3.11",
+      "libraries": {
+        "numpy": ">=1.26,<2.0",
+        "pandas": ">=2.1,<2.3",
+        "scikit_learn": ">=1.3,<1.6",
+        "pytorch": ">=2.1,<2.4",
+        "pytorch_geometric": "as per PyTorch 2.1 compatible version",
+        "pyyaml": ">=6.0,<7.0"
+      },
+      "normalization": "StandardScaler or RobustScaler fitted on training data only; scaler objects persisted and reused for val/test.",
+      "feature_selection": "Identical input feature sets for baselines and treatments wherever model architecture allows; when reduced (e.g., latency-optimized model), record subset explicitly."
+    },
+    "training_protocol": {
+      "cross_validation": "Single fixed train/val split used consistently for hyperparameter selection; hyperparameter search limited to predefined grids and documented.",
+      "early_stopping": "Validation loss or F1-based early stopping with patience defined per model; selection criterion recorded.",
+      "class_imbalance": "Consistent handling across models: class_weight='balanced' for classical models, weighted loss for deep models; sampling strategies (e.g., focal loss or oversampling) documented when used."
+    },
+    "evaluation_protocol": {
+      "test_set_isolation": "Test sets untouched until final evaluation; no hyperparameter tuning or threshold selection using test metrics.",
+      "threshold_selection": "For anomaly scores and probabilistic outputs, thresholds tuned on validation data only, using standardized strategies (e.g., maximize F1, or fixed recall target).",
+      "repetitions": "Each deep model training repeated N=3 runs with different seeds {0,1,2}; report mean and std for core metrics."
+    },
+    "hardware": {
+      "baseline_env": "Single workstation or cloud instance with 8 vCPUs, 32 GB RAM, and a single GPU (e.g., NVIDIA T4 or equivalent) for deep models; CPU-only baseline runs for latency comparison.",
+      "gpu_usage": "GPU used only for deep sequence/graph models during training; inference benchmarks measured separately on CPU and GPU when relevant."
+    }
+  },
+  "metrics": [
+    {
+      "name": "attack_detection_auroc",
+      "unit": "dimensionless (0\u20131)",
+      "description": "Area under the ROC curve for attack/anomaly detection at the window/sequence level on the test set."
+    },
+    {
+      "name": "attack_detection_aupr",
+      "unit": "dimensionless (0\u20131)",
+      "description": "Area under the precision\u2013recall curve for the positive (attack/anomaly) class; especially important under class imbalance (WL-3)."
+    },
+    {
+      "name": "attack_recall_at_fixed_fpr",
+      "unit": "dimensionless (0\u20131)",
+      "description": "Recall of attack/anomaly windows at a fixed false positive rate (e.g., FPR = 1% on validation-tuned threshold)."
+    },
+    {
+      "name": "macro_f1",
+      "unit": "dimensionless (0\u20131)",
+      "description": "Macro-averaged F1-score over benign and attack classes, or over all attack types for multi-class tasks."
+    },
+    {
+      "name": "rare_event_detection_rate",
+      "unit": "dimensionless (0\u20131)",
+      "description": "For WL-3, proportion of rare attack windows correctly flagged at or below a given FPR threshold."
+    },
+    {
+      "name": "inference_latency_p50",
+      "unit": "milliseconds per window/sequence",
+      "description": "Median end-to-end inference time (including preprocessing) measured on CPU and, where applicable, GPU."
+    },
+    {
+      "name": "inference_latency_p95",
+      "unit": "milliseconds per window/sequence",
+      "description": "95th percentile end-to-end inference time; primary latency SLO indicator."
+    },
+    {
+      "name": "throughput_windows_per_second",
+      "unit": "windows per second",
+      "description": "Sustainable throughput for batched inference, measured under steady load on CPU and/or GPU."
+    },
+    {
+      "name": "model_size",
+      "unit": "megabytes",
+      "description": "On-disk size of the persisted model parameters and architecture configuration."
+    },
+    {
+      "name": "training_time",
+      "unit": "minutes",
+      "description": "Wall-clock training time until early stopping for each model on specified hardware."
+    }
+  ],
+  "success_criteria": {
+    "primary": [
+      "On WL-1 (single-link temporal), at least one temporal model (TCN-Seq or LSTM-Seq) achieves >= 5 percentage-point absolute improvement in attack_recall_at_fixed_fpr (FPR = 1%) over RF-Static, with test attack_detection_aupr also improved by >= 0.05 absolute.",
+      "On WL-3 (rare event), AE-Window or VAE-Window achieves >= 0.10 absolute improvement in rare_event_detection_rate at FPR <= 1% compared to IForest-Static, when thresholds are tuned on validation data.",
+      "Hybrid-IForest-RF (or hybrid using AE/VAE scores) achieves higher macro_f1 (>= 0.03 absolute increase) than RF-Static alone on WL-3, while keeping inference_latency_p95 increase <= 50% on CPU."
+    ],
+    "secondary": [
+      "Graph-Context-GCN on WL-2 shows improved localization of attacks (node/edge-level detection) compared to RF-Static applied independently at link level, as measured by at least 0.05 higher macro_f1 on anomalous vs. benign nodes or edges.",
+      "Latency-Optimized-TCN-Lite meets a target inference_latency_p95 <= 10 ms per sequence on CPU for WL-1 while maintaining attack_detection_aupr within 0.03 of full TCN-Seq.",
+      "For at least one temporal model, improvement in AUROC/AUPR over baselines remains consistent (difference in metric >= 0.03) across all three runs with different random seeds."
+    ]
+  },
+  "failure_modes": [
+    {
+      "name": "overfitting_temporal_models",
+      "description": "Temporal models show excellent validation performance but degraded or baseline-equivalent performance on the held-out test set, suggesting overfitting to particular attack timing patterns.",
+      "detection": "Validation metrics substantially higher than test, or large variance across random seeds; learning curves that diverge after few epochs.",
+      "mitigations": [
+        "Increase regularization (dropout, weight decay).",
+        "Simplify model architectures (fewer layers, smaller hidden sizes).",
+        "Augment training data with varied attack timing and noise configurations."
+      ]
+    },
+    {
+      "name": "collapsed_vae_latent_space",
+      "description": "VAE learns trivial encoding where latent variables carry little information, leading to poor separation between normal and anomalous reconstruction errors.",
+      "detection": "KL term dominates or vanishes; reconstruction errors for benign and attack windows share similar distributions on validation data.",
+      "mitigations": [
+        "Adjust beta parameter in beta-VAE objective.",
+        "Modify architecture (larger latent dimension, deeper encoder/decoder).",
+        "Warm-up schedule for KL term or alternative priors."
+      ]
+    },
+    {
+      "name": "instability_with_extreme_class_imbalance",
+      "description": "Models trained on WL-3 fail to converge to useful detectors due to highly imbalanced labels.",
+      "detection": "Models predict majority class for nearly all windows; near-zero recall on attack windows despite good accuracy.",
+      "mitigations": [
+        "Use class-weighted or focal loss.",
+        "Apply limited oversampling or synthetic minority oversampling for supervised components.",
+        "Train unsupervised components strictly on benign data and reframe task as anomaly detection."
+      ]
+    },
+    {
+      "name": "graph_model_scalability_limits",
+      "description": "Graph-based models become prohibitively slow or memory-intensive as the number of nodes/edges or timesteps increases.",
+      "detection": "Out-of-memory errors, excessively long training or inference times, or failure to meet latency targets.",
+      "mitigations": [
+        "Reduce graph size via subgraph extraction (e.g., ego-graphs around suspect nodes).",
+        "Use sampling-based GNNs (GraphSAGE) instead of full-batch GCN.",
+        "Aggregate temporal information before graph construction to reduce graph rate."
+      ]
+    },
+    {
+      "name": "misleading_latency_measurements",
+      "description": "Latency benchmarks are measured under unrealistic conditions (e.g., warm cache, no preprocessing) and do not reflect SOC deployment reality.",
+      "detection": "Significant discrepancy between benchmarked latency and prototype pipeline measurements (Chapter 10).",
+      "mitigations": [
+        "Include feature preprocessing and model inference in latency benchmarks.",
+        "Measure latency over long runs with realistic batch sizes and mixed benign/attack traffic.",
+        "Separate cold-start latency from steady-state latency."
+      ]
+    }
+  ],
+  "required_environment": {
+    "software": {
+      "os": "Linux (Ubuntu 22.04 LTS recommended) or equivalent container base image",
+      "python": "3.11.x",
+      "core_packages": [
+        "numpy>=1.26,<2.0",
+        "pandas>=2.1,<2.3",
+        "scikit-learn>=1.3,<1.6",
+        "torch>=2.1,<2.4",
+        "torchvision>=0.16,<0.18 (for compatibility, though not strictly required)",
+        "torch-geometric and related dependencies aligned with torch version",
+        "pyyaml>=6.0,<7.0",
+        "tqdm>=4.66,<5.0",
+        "matplotlib>=3.8,<3.10",
+        "seaborn>=0.13,<0.14",
+        "jupyterlab>=4.0,<5.0"
+      ],
+      "supporting_repos": [
+        "https://github.com/bookauthority/ai-quantum-threat-detection-guide"
+      ]
+    },
+    "hardware": {
+      "cpu": "8 vCPUs minimum",
+      "ram_gb": 32,
+      "gpu": "Optional but recommended for deep models (e.g., NVIDIA T4, V100, or equivalent with >= 8GB VRAM).",
+      "storage": "At least 20 GB free disk space to store generated datasets, models, and logs."
+    },
+    "repository_layout": {
+      "root": "ai-quantum-threat-detection-guide/",
+      "paths": {
+        "simulator": "sim/ch06_quantum_sim/",
+        "data_pipelines": "pipelines/ch07_data_prep/",
+        "baselines": "experiments/ch08_baselines/",
+        "advanced_models": "experiments/ch09_advanced_models/",
+        "config": "configs/ch09/",
+        "data": "data/ch09/"
+      }
+    }
+  },
+  "run_instructions": {
+    "overview": "The experiment consists of three main phases: (1) data generation using the Chapter 6 simulator configured for the Chapter 9 workloads, (2) dataset preparation using the Chapter 7 pipelines adapted for sequences and graphs, and (3) training and evaluating baseline vs. advanced models, including latency and complexity benchmarks.",
+    "steps": [
+      {
+        "step": 1,
+        "title": "Clone repository and set up environment",
+        "commands": [
+          "git clone https://github.com/bookauthority/ai-quantum-threat-detection-guide.git",
+          "cd ai-quantum-threat-detection-guide",
+          "python3.11 -m venv .venv",
+          "source .venv/bin/activate",
+          "pip install -U pip",
+          "pip install -r requirements_ch09.txt"
+        ],
+        "notes": [
+          "requirements_ch09.txt should pin versions compatible with this experiment, including PyTorch and PyTorch Geometric.",
+          "If GPU is available, install the CUDA-enabled PyTorch build per official instructions and ensure torch.cuda.is_available() returns True."
+        ]
+      },
+      {
+        "step": 2,
+        "title": "Generate simulated data for workloads WL-1, WL-2, and WL-3",
+        "commands": [
+          "python sim/ch06_quantum_sim/run_sim.py --config configs/ch09/wl1_single_link.yaml --output data/ch09/wl1_single_link_temporal/raw/",
+          "python sim/ch06_quantum_sim/run_sim.py --config configs/ch09/wl2_multilink_graph.yaml --output data/ch09/wl2_multilink_graph/raw/",
+          "python sim/ch06_quantum_sim/run_sim.py --config configs/ch09/wl3_rare_events.yaml --output data/ch09/wl3_rare_events/raw/"
+        ],
+        "notes": [
+          "Each config file defines simulation duration, time resolution, attack schedules, and logging options.",
+          "Set RNG seeds in the config or via environment variable (e.g., SIM_SEED=42) to ensure reproducibility.",
+          "Monitor generated log sizes; adjust duration if storage constraints are tight, but keep relative attack frequency and patterns similar."
+        ]
+      },
+      {
+        "step": 3,
+        "title": "Prepare ML-ready datasets (sequences, windows, graphs)",
+        "commands": [
+          "python pipelines/ch07_data_prep/prepare_sequences.py --input data/ch09/wl1_single_link_temporal/raw/ --output data/ch09/wl1_single_link_temporal/ --config configs/ch09/wl1_sequence_prep.yaml",
+          "python pipelines/ch07_data_prep/prepare_graph_slices.py --input data/ch09/wl2_multilink_graph/raw/ --output data/ch09/wl2_multilink_graph/ --config configs/ch09/wl2_graph_prep.yaml",
+          "python pipelines/ch07_data_prep/prepare_windows_rare_events.py --input data/ch09/wl3_rare_events/raw/ --output data/ch09/wl3_rare_events/ --config configs/ch09/wl3_windows_prep.yaml"
+        ],
+        "notes": [
+          "These scripts should implement the windowing and labeling schemes described under workloads, including sequence length, stride, feature extraction, and label assignment.",
+          "Ensure that train/val/test splits are created exactly once and saved (e.g., as index files or split manifests) to avoid data leakage.",
+          "Output formats: PyTorch tensors (.pt) or NumPy arrays (.npz) for sequence/window data; for graphs, PyTorch Geometric data objects serialized per slice or batched."
+        ]
+      },
+      {
+        "step": 4,
+        "title": "Run baseline models on Chapter 9 datasets",
+        "commands": [
+          "python experiments/ch08_baselines/run_baselines.py --dataset-config configs/ch09/wl1_baseline.yaml --output results/ch09/baselines/wl1/",
+          "python experiments/ch08_baselines/run_baselines.py --dataset-config configs/ch09/wl3_baseline.yaml --output results/ch09/baselines/wl3/"
+        ],
+        "notes": [
+          "Use the same feature sets as for Chapter 8 where possible; for temporal data, derive aggregated features per window consistent with baseline assumptions.",
+          "Store trained baseline models and metrics in results/ch09/baselines/ to enable direct comparison."
+        ]
+      },
+      {
+        "step": 5,
+        "title": "Train and evaluate temporal models (TCN-Seq, LSTM-Seq, Latency-Optimized-TCN-Lite)",
+        "commands": [
+          "python experiments/ch09_advanced_models/train_sequence_model.py --model tcn --dataset data/ch09/wl1_single_link_temporal/ --config configs/ch09/tcn_wl1.yaml --seed 0 --output results/ch09/tcn/wl1/seed0/",
+          "python experiments/ch09_advanced_models/train_sequence_model.py --model tcn --dataset data/ch09/wl1_single_link_temporal/ --config configs/ch09/tcn_wl1.yaml --seed 1 --output results/ch09/tcn/wl1/seed1/",
+          "python experiments/ch09_advanced_models/train_sequence_model.py --model tcn --dataset data/ch09/wl1_single_link_temporal/ --config configs/ch09/tcn_wl1.yaml --seed 2 --output results/ch09/tcn/wl1/seed2/",
+          "python experiments/ch09_advanced_models/train_sequence_model.py --model lstm --dataset data/ch09/wl1_single_link_temporal/ --config configs/ch09/lstm_wl1.yaml --seed 0 --output results/ch09/lstm/wl1/seed0/",
+          "python experiments/ch09_advanced_models/train_sequence_model.py --model tcn_lite --dataset data/ch09/wl1_single_link_temporal/ --config configs/ch09/tcn_lite_wl1.yaml --seed 0 --output results/ch09/tcn_lite/wl1/seed0/"
+        ],
+        "notes": [
+          "Each run should save: model checkpoints, training logs, validation metrics per epoch, final test metrics, and latency benchmarks.",
+          "Latency benchmarks: use a separate script or mode (e.g., --benchmark-latency) to evaluate inference_latency_p50/p95 and throughput on CPU and, optionally, GPU."
+        ]
+      },
+      {
+        "step": 6,
+        "title": "Train and evaluate autoencoder and VAE models on rare-event dataset",
+        "commands": [
+          "python experiments/ch09_advanced_models/train_autoencoder.py --model ae --dataset data/ch09/wl3_rare_events/ --config configs/ch09/ae_wl3.yaml --seed 0 --output results/ch09/ae/wl3/seed0/",
+          "python experiments/ch09_advanced_models/train_autoencoder.py --model vae --dataset data/ch09/wl3_rare_events/ --config configs/ch09/vae_wl3.yaml --seed 0 --output results/ch09/vae/wl3/seed0/"
+        ],
+        "notes": [
+          "Ensure that AE/VAE training uses only benign windows from the training split.",
+          "After training, run anomaly scoring on val/test splits and compute AUROC, AUPR, rare_event_detection_rate, and threshold-dependent metrics.",
+          "Store reconstruction error distributions and score histograms for later analysis."
+        ]
+      },
+      {
+        "step": 7,
+        "title": "Train and evaluate hybrid models combining anomaly scores with supervised classifiers",
+        "commands": [
+          "python experiments/ch09_advanced_models/train_hybrid.py --unsupervised-model results/ch09/ae/wl3/seed0/model.pt --dataset data/ch09/wl3_rare_events/ --config configs/ch09/hybrid_ae_rf_wl3.yaml --seed 0 --output results/ch09/hybrid_ae_rf/wl3/seed0/",
+          "python experiments/ch09_advanced_models/train_hybrid.py --unsupervised-model results/ch09/vae/wl3/seed0/model.pt --dataset data/ch09/wl3_rare_events/ --config configs/ch09/hybrid_vae_rf_wl3.yaml --seed 0 --output results/ch09/hybrid_vae_rf/wl3/seed0/"
+        ],
+        "notes": [
+          "The hybrid script should first compute and persist anomaly scores for all train/val/test windows, then augment feature vectors with these scores before training the supervised classifier.",
+          "Calibration of predicted probabilities (e.g., Platt scaling) should be performed on the validation split and applied at test time."
+        ]
+      },
+      {
+        "step": 8,
+        "title": "Train and evaluate graph-based contextual model",
+        "commands": [
+          "python experiments/ch09_advanced_models/train_gnn.py --dataset data/ch09/wl2_multilink_graph/ --config configs/ch09/gnn_wl2.yaml --seed 0 --output results/ch09/gnn/wl2/seed0/"
+        ],
+        "notes": [
+          "Use PyTorch Geometric loaders for graph slices.",
+          "Evaluate both node-level and edge-level detection metrics; store confusion matrices and per-node/edge scores.",
+          "For complexity analysis, vary number of layers or hidden dimensions via config to observe performance vs. complexity trade-offs."
+        ]
+      },
+      {
+        "step": 9,
+        "title": "Aggregate metrics and compare treatments with baselines",
+        "commands": [
+          "python experiments/ch09_advanced_models/aggregate_results.py --baselines results/ch09/baselines/ --treatments results/ch09/ --output results/ch09/summary_metrics.json"
+        ],
+        "notes": [
+          "The aggregation script should produce tables and plots comparing AUROC, AUPR, recall at fixed FPR, macro F1, latency, throughput, model size, and training time across baselines and advanced models.",
+          "Ensure that statistical summaries (mean, std across seeds) are computed and stored for temporal models."
+        ]
+      },
+      {
+        "step": 10,
+        "title": "Optional: Run Chapter 9 Jupyter notebook for interactive exploration",
+        "commands": [
+          "jupyter lab notebooks/ch09_advanced_models.ipynb"
+        ],
+        "notes": [
+          "The notebook should load precomputed metrics and provide visualizations (ROC/PR curves, latency vs. performance plots) and code snippets explaining key design trade-offs.",
+          "Interactive widgets can allow adjusting thresholds and observing impact on operational metrics like alert rate."
+        ]
+      }
+    ]
+  },
+  "evidence_schema": {
+    "description": "Schema for capturing and storing experimental results to enable rigorous comparison and reproducibility, without encoding any specific outcomes.",
+    "artifact_structure": {
+      "metrics_file": {
+        "path_pattern": "results/ch09/{model_family}/{workload}/seed{seed}/metrics.json",
+        "fields": {
+          "model_name": "string (e.g., 'TCN-Seq')",
+          "model_family": "string (e.g., 'tcn', 'lstm', 'ae', 'vae', 'hybrid', 'gnn', 'baseline')",
+          "workload": "string (e.g., 'WL-1', 'WL-2', 'WL-3')",
+          "seed": "integer",
+          "dataset_version": "string or hash identifying the exact dataset/preprocessing version",
+          "attack_detection_auroc": "float or null",
+          "attack_detection_aupr": "float or null",
+          "attack_recall_at_fixed_fpr": {
+            "fpr_target": "float (e.g., 0.01)",
+            "value": "float or null"
+          },
+          "macro_f1": "float or null",
+          "rare_event_detection_rate": {
+            "fpr_constraint": "float (e.g., 0.01)",
+            "value": "float or null"
+          },
+          "inference_latency_p50": {
+            "device": "string ('cpu' or 'gpu')",
+            "value_ms": "float or null"
+          },
+          "inference_latency_p95": {
+            "device": "string ('cpu' or 'gpu')",
+            "value_ms": "float or null"
+          },
+          "throughput_windows_per_second": {
+            "device": "string ('cpu' or 'gpu')",
+            "value": "float or null"
+          },
+          "model_size_mb": "float or null",
+          "training_time_minutes": "float or null",
+          "notes": "optional string with free-form comments about run conditions or anomalies"
+        }
+      },
+      "latency_benchmark_file": {
+        "path_pattern": "results/ch09/{model_family}/{workload}/seed{seed}/latency_benchmark.json",
+        "fields": {
+          "model_name": "string",
+          "device": "string ('cpu' or 'gpu')",
+          "batch_size": "integer",
+          "num_warmup_iterations": "integer",
+          "num_measured_iterations": "integer",
+          "latency_samples_ms": "array of float",
+          "computed_statistics": {
+            "p50_ms": "float",
+            "p95_ms": "float",
+            "p99_ms": "float",
+            "mean_ms": "float",
+            "std_ms": "float"
+          }
+        }
+      },
+      "training_log_file": {
+        "path_pattern": "results/ch09/{model_family}/{workload}/seed{seed}/training_log.jsonl",
+        "fields_per_line": {
+          "epoch": "integer",
+          "split": "string ('train' or 'val')",
+          "loss": "float",
+          "attack_detection_auroc": "float or null",
+          "attack_detection_aupr": "float or null",
+          "macro_f1": "float or null",
+          "timestamp": "ISO 8601 datetime string"
+        }
+      },
+      "config_file": {
+        "path_pattern": "results/ch09/{model_family}/{workload}/seed{seed}/used_config.yaml",
+        "fields": "Complete snapshot of all hyperparameters, data paths, and environment settings used for the run."
+      },
+      "summary_file": {
+        "path": "results/ch09/summary_metrics.json",
+        "fields": {
+          "experiment_id": "string ('exp-09-advanced-temporal-hybrid-modeling')",
+          "baseline_results": "array of aggregated metric objects per baseline model and workload (mean, std, sample_count)",
+          "treatment_results": "array of aggregated metric objects per treatment model and workload",
+          "comparisons": "array of objects describing differences between baselines and treatments for each metric, including confidence intervals or effect sizes where computed"
+        }
+      }
+    },
+    "baseline_treatment_linking": {
+      "approach": "For each workload and metric, link baselines and treatments via common workload key and metric names; comparisons computed as treatment_metric - baseline_metric for chosen baselines.",
+      "fields": [
+        "workload",
+        "metric_name",
+        "baseline_model_name",
+        "treatment_model_name",
+        "baseline_value_mean",
+        "baseline_value_std",
+        "treatment_value_mean",
+        "treatment_value_std",
+        "difference",
+        "relative_difference_pct"
+      ]
+    }
+  }
+}

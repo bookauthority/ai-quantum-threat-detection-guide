@@ -1,0 +1,706 @@
+{
+  "experiment_id": "exp-ch06-quantum-net-sim-env-v1",
+  "hypothesis": "A simplified, parameterized quantum-link and QKD process simulator implemented in Python can generate telemetry whose statistical properties (e.g., QBER, sifted key rate, loss patterns) under both benign and attack conditions match analytically expected ranges and qualitative behaviors from published QKD models closely enough to serve as reliable training and evaluation data for ML-based detection experiments.",
+  "baseline": {
+    "description": "A minimal quantum-link simulator with naive noise and failure modeling and no explicit attack injection framework.",
+    "model_characteristics": {
+      "qkd_protocol": "BB84-like, without decoy states or basis-dependent efficiency modeling.",
+      "time_model": "Discrete time steps (e.g., per timeslot or batch) with independent, identically distributed Bernoulli trials for detection and errors.",
+      "noise_model": "Static, memoryless bit-flip probability q_static for all time steps and channels; no temporal correlation, no component-level decomposition (e.g., dark counts vs. misalignment).",
+      "loss_model": "Fixed detection probability p_det_static per emitted photon; no distance dependence, no component-level attenuation (fiber, connectors, detectors).",
+      "benign_failures": [
+        "Simple, instantaneous hard failure flag at randomly chosen time steps that sets detection probability to zero.",
+        "No gradual degradation, drift, or correlated failure modes."
+      ],
+      "attacks": [],
+      "telemetry": [
+        "per_step_emitted_photons",
+        "per_step_detected_photons",
+        "per_step_error_bits",
+        "per_step_qber",
+        "per_step_sifted_key_bits"
+      ]
+    },
+    "implementation_characteristics": {
+      "language": "Python 3.11",
+      "core_dependencies": [
+        "numpy>=1.26.0",
+        "pandas>=2.2.0"
+      ],
+      "interfaces": {
+        "configuration": "Static Python dicts or simple YAML/JSON files defining q_static, p_det_static, number_of_steps, and random_seed.",
+        "execution": "Single function run_baseline_sim(config: Dict) -> pandas.DataFrame.",
+        "output_format": "One CSV file per run with per-step telemetry; no multi-link support, no scenario labels."
+      }
+    }
+  },
+  "treatment": {
+    "description": "A security-focused quantum network simulator with structured QKD link modeling, configurable benign and adversarial scenarios, and ML-ready telemetry export.",
+    "model_characteristics": {
+      "qkd_protocol": "Configurable BB84-based model with options for decoy-state style intensity levels (simplified) and explicit separation of quantum and classical phases (quantum transmission, sifting, parameter estimation).",
+      "time_model": "Discrete time slots grouped into frames; supports variable frame size and adjustable clock rate. Temporal correlation introduced via piecewise-stationary parameters and random walks for drift.",
+      "noise_model": {
+        "components": [
+          "channel_attenuation_loss (distance-dependent)",
+          "detector_dark_counts",
+          "polarization_or_phase_misalignment (misalignment_angle parameter)",
+          "background_noise_level (optional, for free-space-like scenarios)"
+        ],
+        "behaviors": [
+          "Baseline noise level q0 reflecting typical lab/field QBER ranges (e.g., 1\u20133%).",
+          "Slow drift modeled as random walk on misalignment_angle or background_noise_level.",
+          "Transient spikes associated with benign events (e.g., maintenance, temperature events) defined as explicit scenarios."
+        ]
+      },
+      "loss_model": {
+        "fiber_loss_db_per_km": "Configurable (e.g., 0.2 dB/km), used with link_distance_km to compute channel transmission.",
+        "detector_efficiency": "Explicit parameter, combined multiplicatively with channel transmission.",
+        "insertion_losses_db": "Optional constant loss term accounting for connectors, filters, etc.",
+        "per_slot_detection_probability": "Derived from optical power budget plus Poisson statistics approximated via binomial/Poisson sampling; configurable simplifications for performance."
+      },
+      "benign_failures": [
+        "Gradual degradation: linear or exponential change in attenuation or misalignment_angle over a time window.",
+        "Intermittent dropouts: burst losses where detection probability sharply drops for several consecutive frames.",
+        "Calibration events: short intervals with temporarily increased QBER followed by improvement."
+      ],
+      "attacks": [
+        {
+          "name": "intercept_resend_eavesdropping",
+          "effects": [
+            "Increased QBER above benign baseline during attack windows, controllable by attack_intensity.",
+            "Possible reduction in key rate due to more aggressive parameter estimation and potential key discarding."
+          ],
+          "parameters": [
+            "start_time_step",
+            "end_time_step",
+            "attack_intensity (0\u20131 scaling factor)",
+            "basis_bias (optional, to simulate smarter attackers)"
+          ]
+        },
+        {
+          "name": "photon_number_splitting_like_attack",
+          "effects": [
+            "Moderate QBER increase or none (depending on model choice).",
+            "Subtle changes to raw detection statistics, especially in multi-intensity (decoy) regimes.",
+            "Apparent change in channel transmittance for certain intensity levels."
+          ],
+          "parameters": [
+            "start_time_step",
+            "end_time_step",
+            "preferred_intensity_level"
+          ]
+        },
+        {
+          "name": "jamming_or_dos",
+          "effects": [
+            "Strong reduction in detection probability or complete key rate drop.",
+            "Possible QBER spikes if modeled as high-level noise instead of pure blocking."
+          ],
+          "parameters": [
+            "start_time_step",
+            "end_time_step",
+            "jam_type (\"blocking\" | \"noisy\")",
+            "jam_strength (0\u20131)"
+          ]
+        },
+        {
+          "name": "misconfiguration",
+          "effects": [
+            "Persistent or step-change QBER increases linked to basis bias or misalignment.",
+            "Non-adversarial but risk-relevant failure pattern for anomaly detectors."
+          ],
+          "parameters": [
+            "change_time_step",
+            "basis_bias_change",
+            "misalignment_delta"
+          ]
+        }
+      ],
+      "topology": {
+        "supported_structures": [
+          "single_link",
+          "line_with_trusted_repeater_nodes",
+          "star_topology (central hub with multiple spokes)"
+        ],
+        "simplification": "Quantum behavior modeled per link, with classical sifting and key management approximated; entanglement swapping and advanced repeater effects may be stubbed or modeled via latency and error-correlation parameters rather than full quantum state simulation."
+      },
+      "telemetry": [
+        "time_step",
+        "frame_id",
+        "link_id",
+        "topology_node_src",
+        "topology_node_dst",
+        "scenario_id",
+        "scenario_type (benign|attack)",
+        "attack_name (nullable)",
+        "attack_parameters (JSON-encoded or separate columns)",
+        "emitted_photons",
+        "detected_photons",
+        "dark_counts",
+        "error_bits",
+        "qber",
+        "sifted_key_bits",
+        "secret_key_bits_estimated",
+        "channel_loss_db",
+        "link_distance_km",
+        "fiber_loss_db_per_km",
+        "detector_efficiency",
+        "background_noise_level",
+        "misalignment_angle",
+        "dropout_flag",
+        "calibration_event_flag"
+      ],
+      "validation_targets": [
+        "Baseline QBER distribution within configurable expected range (e.g., 0.5\u20135%) under nominal conditions.",
+        "Monotonic relationship between link_distance_km and average channel_loss_db and key rate.",
+        "Significant QBER elevation under intercept_resend attacks vs. benign drift, as expected from simplified BB84 analysis.",
+        "Plausible patterns of transient vs. sustained anomalies for benign failures vs. adversarial attacks."
+      ]
+    },
+    "implementation_characteristics": {
+      "language": "Python 3.11",
+      "core_dependencies": [
+        "numpy>=1.26.0",
+        "pandas>=2.2.0",
+        "pyyaml>=6.0.0",
+        "pydantic>=2.0.0"
+      ],
+      "module_structure": {
+        "package_root": "quantum_sim",
+        "modules": [
+          "quantum_sim.config (configuration schemas, validation via pydantic)",
+          "quantum_sim.link_models (QKDLink, noise models, loss models)",
+          "quantum_sim.topology (NetworkTopology, multi-link orchestration)",
+          "quantum_sim.scenarios (benign and attack scenario definitions)",
+          "quantum_sim.telemetry (data structures, logging helpers)",
+          "quantum_sim.runner (orchestration of simulation runs over scenarios)",
+          "quantum_sim.validation (checks against analytical/expected properties)",
+          "quantum_sim.cli (command-line interface for running experiments)"
+        ]
+      },
+      "interfaces": {
+        "configuration": "YAML/JSON experiment config files plus optional Python API for programmatic experiment construction.",
+        "execution": "CLI entry point `python -m quantum_sim.runner --config path/to/experiment.yaml` and Python API `run_experiment(config: ExperimentConfig) -> pd.DataFrame`.",
+        "output_format": "Per-experiment directory with raw telemetry CSV/Parquet, metadata JSON (config, hashes, versions), and optional pre-split ML datasets.",
+        "reproducibility": "All runs require explicit random_seed in config and record Python and package versions."
+      }
+    }
+  },
+  "workloads": [
+    {
+      "name": "baseline_single_link_nominal",
+      "description": "Evaluate baseline simulator behavior for a single BB84-like link under nominal, static noise and loss conditions.",
+      "simulator_variant": "baseline",
+      "config": {
+        "link_distance_km": 20,
+        "q_static": 0.02,
+        "p_det_static": 0.1,
+        "time_steps": 10000,
+        "emitted_photons_per_step": 1000,
+        "random_seed": 1234
+      },
+      "expected_use": "Sanity-check baseline implementation and provide a simple, easily understood dataset for comparison to the treatment simulator."
+    },
+    {
+      "name": "treatment_single_link_benign",
+      "description": "Run the treatment simulator on a single link across a range of distances, modeling realistic loss, noise, and benign drift/failures.",
+      "simulator_variant": "treatment",
+      "config": {
+        "topology": {
+          "type": "single_link",
+          "nodes": [
+            "Alice",
+            "Bob"
+          ],
+          "links": [
+            {
+              "id": "link_ab",
+              "src": "Alice",
+              "dst": "Bob",
+              "link_distance_km": 10
+            }
+          ]
+        },
+        "qkd_protocol": "BB84_simplified",
+        "fiber_loss_db_per_km": 0.2,
+        "detector_efficiency": 0.15,
+        "insertion_losses_db": 1.0,
+        "baseline_qber": 0.02,
+        "noise_model": {
+          "dark_count_rate": 100,
+          "background_noise_level": 0.001,
+          "misalignment_angle_deg": 3.0,
+          "drift_process": {
+            "type": "random_walk",
+            "std_per_1000_steps": 0.25
+          }
+        },
+        "time_model": {
+          "steps": 20000,
+          "frame_size": 100,
+          "emitted_photons_per_step": 1000
+        },
+        "benign_scenarios": [
+          {
+            "type": "gradual_degradation",
+            "start_step": 5000,
+            "end_step": 15000,
+            "attenuation_delta_db": 3.0
+          },
+          {
+            "type": "intermittent_dropout",
+            "num_bursts": 5,
+            "burst_length_steps": 50,
+            "detection_scaling": 0.1
+          }
+        ],
+        "attack_scenarios": [],
+        "random_seed": 42
+      },
+      "expected_use": "Produce a high-quality benign dataset for ML training and validate that benign patterns match known QKD behavior (e.g., low QBER, distance-loss trade-offs, realistic drift)."
+    },
+    {
+      "name": "treatment_single_link_attacks",
+      "description": "Run the treatment simulator for a single link with scheduled attack intervals for intercept-resend, jamming, and misconfiguration.",
+      "simulator_variant": "treatment",
+      "config": {
+        "topology": {
+          "type": "single_link",
+          "nodes": [
+            "Alice",
+            "Bob"
+          ],
+          "links": [
+            {
+              "id": "link_ab",
+              "src": "Alice",
+              "dst": "Bob",
+              "link_distance_km": 10
+            }
+          ]
+        },
+        "qkd_protocol": "BB84_simplified",
+        "fiber_loss_db_per_km": 0.2,
+        "detector_efficiency": 0.15,
+        "baseline_qber": 0.02,
+        "noise_model": {
+          "dark_count_rate": 100,
+          "background_noise_level": 0.001,
+          "misalignment_angle_deg": 3.0
+        },
+        "time_model": {
+          "steps": 30000,
+          "frame_size": 100,
+          "emitted_photons_per_step": 1000
+        },
+        "benign_scenarios": [],
+        "attack_scenarios": [
+          {
+            "id": "attack1",
+            "type": "intercept_resend_eavesdropping",
+            "start_step": 5000,
+            "end_step": 10000,
+            "attack_intensity": 0.8
+          },
+          {
+            "id": "attack2",
+            "type": "jamming_or_dos",
+            "jam_type": "blocking",
+            "start_step": 15000,
+            "end_step": 17000,
+            "jam_strength": 1.0
+          },
+          {
+            "id": "attack3",
+            "type": "misconfiguration",
+            "change_time_step": 22000,
+            "basis_bias_change": 0.2,
+            "misalignment_delta": 2.0
+          }
+        ],
+        "random_seed": 43
+      },
+      "expected_use": "Generate clearly labeled attack windows with distinguishable telemetry patterns used later for supervised and semi-supervised ML experiments."
+    },
+    {
+      "name": "treatment_multilink_topology_mixed",
+      "description": "Run the treatment simulator on a small multi-link topology (e.g., a line topology with a trusted repeater) with a mix of benign and adversarial events.",
+      "simulator_variant": "treatment",
+      "config": {
+        "topology": {
+          "type": "line",
+          "nodes": [
+            "Alice",
+            "R1",
+            "Bob"
+          ],
+          "links": [
+            {
+              "id": "link_a_r1",
+              "src": "Alice",
+              "dst": "R1",
+              "link_distance_km": 25
+            },
+            {
+              "id": "link_r1_b",
+              "src": "R1",
+              "dst": "Bob",
+              "link_distance_km": 25
+            }
+          ]
+        },
+        "qkd_protocol": "BB84_simplified",
+        "fiber_loss_db_per_km": 0.2,
+        "detector_efficiency": 0.2,
+        "baseline_qber": 0.015,
+        "noise_model": {
+          "dark_count_rate": 80,
+          "background_noise_level": 0.001,
+          "misalignment_angle_deg": 2.0
+        },
+        "time_model": {
+          "steps": 40000,
+          "frame_size": 200,
+          "emitted_photons_per_step": 1500
+        },
+        "benign_scenarios": [
+          {
+            "target_link_id": "link_a_r1",
+            "type": "gradual_degradation",
+            "start_step": 10000,
+            "end_step": 25000,
+            "attenuation_delta_db": 2.0
+          }
+        ],
+        "attack_scenarios": [
+          {
+            "id": "attack4",
+            "target_link_id": "link_r1_b",
+            "type": "intercept_resend_eavesdropping",
+            "start_step": 15000,
+            "end_step": 20000,
+            "attack_intensity": 0.6
+          },
+          {
+            "id": "attack5",
+            "target_node_id": "R1",
+            "type": "misconfiguration",
+            "change_time_step": 30000,
+            "basis_bias_change": 0.1,
+            "misalignment_delta": 1.0
+          }
+        ],
+        "random_seed": 44
+      },
+      "expected_use": "Stress-test the simulator\u2019s support for multiple links and nodes, and create datasets with spatial (topological) variation for future graph/relational ML models."
+    }
+  ],
+  "controls": {
+    "randomness_and_seeds": {
+      "policy": "All experiment configurations must specify a fixed random_seed; simulators must set numpy.random.Generator with this seed at the start of each run and not reseed mid-run.",
+      "implementation_notes": [
+        "Use numpy.random.default_rng(random_seed) and pass the generator explicitly to all stochastic routines.",
+        "Record random_seed in each experiment\u2019s metadata.json."
+      ]
+    },
+    "environment_versioning": {
+      "python_version": "3.11.x",
+      "library_versions": {
+        "numpy": "1.26.x",
+        "pandas": "2.2.x",
+        "pyyaml": "6.0.x",
+        "pydantic": "2.0.x"
+      },
+      "recording": "On each run, write a `env_info.json` capturing Python version, OS, CPU info, and package versions (via `pip freeze` or equivalent)."
+    },
+    "configuration_management": {
+      "storage": "All experiment configs must be stored under `experiments/ch06/` in the repository and checked into version control.",
+      "naming": "Use descriptive but stable names (e.g., `baseline_single_link_nominal.yaml`, `treatment_single_link_attacks.yaml`).",
+      "hashing": "Compute and store SHA256 hashes of each config file in metadata for tamper-evidence and reproducibility."
+    },
+    "execution_environment": {
+      "hardware": "Commodity laptop or workstation; no GPU required for this chapter.",
+      "repeat_runs": "Each workload must be run at least twice with the same seed to verify bitwise-identical outputs before moving on to ML chapters."
+    },
+    "telemetry_schema": {
+      "schema_enforcement": "Implement a schema validation step (e.g., via pandas dtypes checks and pydantic models) before writing output files.",
+      "column_order_and_types": "Fix and document a canonical column ordering and data types; reject or log any deviation."
+    }
+  },
+  "metrics": [
+    {
+      "name": "mean_qber_benign",
+      "description": "Average quantum bit error rate over all benign (non-attack) time steps in a simulation run.",
+      "unit": "fraction (0\u20131)"
+    },
+    {
+      "name": "std_qber_benign",
+      "description": "Standard deviation of QBER over benign time steps.",
+      "unit": "fraction (0\u20131)"
+    },
+    {
+      "name": "mean_qber_attack",
+      "description": "Average QBER over attack-labeled time steps for a given attack scenario.",
+      "unit": "fraction (0\u20131)"
+    },
+    {
+      "name": "qber_attack_benign_ratio",
+      "description": "Ratio of mean QBER during attack windows to mean QBER during benign windows for the same link.",
+      "unit": "dimensionless ratio"
+    },
+    {
+      "name": "mean_secret_key_rate_benign",
+      "description": "Average estimated secret key bits per time step during benign operation, after parameter estimation and privacy amplification approximations.",
+      "unit": "bits per time step"
+    },
+    {
+      "name": "mean_secret_key_rate_attack",
+      "description": "Average estimated secret key bits per time step during attack intervals.",
+      "unit": "bits per time step"
+    },
+    {
+      "name": "distance_loss_correlation",
+      "description": "Pearson correlation coefficient between link_distance_km and channel_loss_db across different links or runs.",
+      "unit": "correlation coefficient (\u22121 to 1)"
+    },
+    {
+      "name": "distance_keyrate_correlation",
+      "description": "Pearson correlation coefficient between link_distance_km and mean_secret_key_rate_benign, expected to be strongly negative.",
+      "unit": "correlation coefficient (\u22121 to 1)"
+    },
+    {
+      "name": "telemetry_schema_compliance_rate",
+      "description": "Fraction of rows in output telemetry that pass schema validation (correct columns, dtypes, and non-null constraints where required).",
+      "unit": "fraction (0\u20131)"
+    },
+    {
+      "name": "run_reproducibility_rate",
+      "description": "For repeated runs with the same seed and configuration, the fraction of runs where outputs are bitwise identical.",
+      "unit": "fraction (0\u20131)"
+    },
+    {
+      "name": "simulation_runtime",
+      "description": "Wall-clock time to complete a simulation workload, from start of simulator to successful write of telemetry files.",
+      "unit": "seconds"
+    },
+    {
+      "name": "memory_footprint_peak",
+      "description": "Peak resident memory used during a simulation run (as reported by OS or a profiler).",
+      "unit": "megabytes"
+    }
+  ],
+  "success_criteria": {
+    "statistical_behavior": [
+      "For benign workloads, mean_qber_benign must fall within a user-configurable expected range (default: [0.005, 0.05]) and match the configured baseline_qber within a tolerable relative error (e.g., \u00b150% relative for noisy toy models).",
+      "For intercept_resend_eavesdropping attack windows, qber_attack_benign_ratio must be > 2.0 for at least one attack scenario per workload, indicating a clearly detectable QBER increase.",
+      "For jamming_or_dos attacks of type \"blocking\", mean_secret_key_rate_attack must be < 5% of mean_secret_key_rate_benign for the same link and configuration.",
+      "distance_loss_correlation across links or runs must be \u2265 0.8, reflecting a strong positive correlation between distance and loss.",
+      "distance_keyrate_correlation must be \u2264 \u22120.8, reflecting a strong negative correlation between distance and secret key rate under benign conditions."
+    ],
+    "reproducibility_and_schema": [
+      "telemetry_schema_compliance_rate must be 1.0 for all workloads; any schema violations must fail the run.",
+      "run_reproducibility_rate must be 1.0 when re-running a given config and seed at least twice on the same software environment.",
+      "Metadata files must include config hash, random_seed, Python and package versions, and simulator git commit hash."
+    ],
+    "performance": [
+      "For workloads with <= 40,000 time steps and <= 2 links, simulation_runtime on a typical laptop CPU (e.g., 4-core, 2.5 GHz) must not exceed 5 minutes.",
+      "memory_footprint_peak must remain below 1 GB for the defined workloads."
+    ],
+    "dataset_export": [
+      "Each workload must produce at least one ML-ready dataset file (e.g., Parquet/CSV) with explicit labels for scenario_type and attack_name when applicable.",
+      "No dataset may contain unlabeled attack intervals; scenario labeling must be consistent and contiguous for known attack windows."
+    ]
+  },
+  "failure_modes": [
+    {
+      "name": "qber_out_of_expected_range",
+      "description": "Benign QBER levels are systematically too low (near 0) or too high (> 10%), indicating miscalibrated noise parameters or implementation bugs.",
+      "detection": "Check mean_qber_benign and std_qber_benign against configured acceptable intervals during validation."
+    },
+    {
+      "name": "attack_signals_not_distinguishable",
+      "description": "Attack windows do not produce telemetry distinguishable from benign drift (e.g., qber_attack_benign_ratio ~ 1).",
+      "detection": "Compare QBER and key rates between benign and attack windows; if defined success thresholds are not met, investigate attack models."
+    },
+    {
+      "name": "distance_not_correlated_with_loss",
+      "description": "distance_loss_correlation is weak or negative, suggesting an error in the loss model or in the way distance is incorporated.",
+      "detection": "Compute correlation metrics across multi-distance runs; triggers failure when |distance_loss_correlation| < 0.5."
+    },
+    {
+      "name": "non_reproducible_outputs",
+      "description": "Running the same configuration with the same seed produces different telemetry outputs.",
+      "detection": "Hash output telemetry files across repeated runs; mismatch implies non-determinism (e.g., misuse of global RNG or uncontrolled parallelism)."
+    },
+    {
+      "name": "schema_mismatch_or_data_corruption",
+      "description": "Telemetry files are missing required columns, contain wrong data types, or have unexpected nulls in non-nullable fields.",
+      "detection": "Run schema validator prior to any downstream usage; raise errors and mark experiment run as failed if checks fail."
+    },
+    {
+      "name": "excessive_runtime_or_memory_usage",
+      "description": "Simulator runs exceed predefined runtime or memory constraints, impairing practicality for readers.",
+      "detection": "Record simulation_runtime and memory_footprint_peak; compare against thresholds and log warnings or fail CI checks."
+    },
+    {
+      "name": "labeling_inconsistency",
+      "description": "Scenario_type and attack_name labels do not correctly reflect the configured attack intervals (e.g., attack-labeled rows outside configured windows).",
+      "detection": "Cross-check telemetry labels against scenario configuration in validation step; misalignments cause validation failure."
+    }
+  ],
+  "required_environment": {
+    "software": {
+      "os": [
+        "Linux (Ubuntu 22.04 or similar)",
+        "macOS (13+)",
+        "Windows 11 (via WSL2 recommended)"
+      ],
+      "python": "3.11.x",
+      "dependencies": [
+        "numpy>=1.26.0",
+        "pandas>=2.2.0",
+        "pyyaml>=6.0.0",
+        "pydantic>=2.0.0"
+      ],
+      "optional_tools": [
+        "git (for cloning and version tracking)",
+        "make or simple shell scripts for convenience (optional)",
+        "JupyterLab or VS Code for exploratory runs (optional)"
+      ]
+    },
+    "hardware": {
+      "cpu": "x86_64, at least 4 cores @ >=2.0 GHz",
+      "ram_gb": 8,
+      "disk_space_gb": 2
+    },
+    "repository_layout": {
+      "url": "https://github.com/bookauthority/ai-quantum-threat-detection-guide",
+      "expected_paths": [
+        "quantum_sim/ (simulator package)",
+        "experiments/ch06/configs/ (YAML/JSON experiment definitions)",
+        "experiments/ch06/runs/ (generated outputs, organized by experiment_id/run_id)",
+        "notebooks/ch06/ (optional exploratory notebooks for visualization)"
+      ]
+    }
+  },
+  "run_instructions": [
+    "Clone the repository: `git clone https://github.com/bookauthority/ai-quantum-threat-detection-guide.git` and `cd ai-quantum-threat-detection-guide`.",
+    "Create and activate a Python 3.11 virtual environment using your preferred tool (e.g., `python3.11 -m venv .venv && source .venv/bin/activate` on Unix-like systems).",
+    "Install the simulator and dependencies: `pip install -e .` or, if the project is not packaged, `pip install -r requirements.txt` ensuring it includes the specified numpy, pandas, pyyaml, and pydantic versions.",
+    "Verify Python and library versions: run a small script (e.g., `python -c \"import sys, numpy, pandas; print(sys.version); print(numpy.__version__); print(pandas.__version__)\"`) and confirm they match or exceed the required versions.",
+    "Navigate to the experiment configs for Chapter 6: `cd experiments/ch06/configs` and inspect the provided YAML files (e.g., `baseline_single_link_nominal.yaml`, `treatment_single_link_benign.yaml`, `treatment_single_link_attacks.yaml`, `treatment_multilink_topology_mixed.yaml`).",
+    "Run the baseline workload using the CLI (assuming an entry point `quantum_sim.runner`): `python -m quantum_sim.runner --config experiments/ch06/configs/baseline_single_link_nominal.yaml --out-dir experiments/ch06/runs/baseline_single_link_nominal`.",
+    "After the run completes, verify that the output directory contains at least: `telemetry.csv` (or `.parquet`), `metadata.json`, and `env_info.json`.",
+    "Inspect the telemetry schema by loading it into Python (e.g., `import pandas as pd; df = pd.read_csv('.../telemetry.csv'); print(df.dtypes); df.head()`) and confirm the expected columns and data types are present.",
+    "Repeat for the treatment benign workload: `python -m quantum_sim.runner --config experiments/ch06/configs/treatment_single_link_benign.yaml --out-dir experiments/ch06/runs/treatment_single_link_benign`.",
+    "Run the treatment workloads with attack scenarios and multi-link topology similarly, changing `--config` and `--out-dir` to the respective files and directories.",
+    "For each run, execute the built-in validation routine (if exposed via CLI, e.g., `python -m quantum_sim.validation --run-dir experiments/ch06/runs/treatment_single_link_attacks`) to compute metrics such as mean_qber_benign, mean_qber_attack, qber_attack_benign_ratio, distance_loss_correlation, and confirm they meet success_criteria thresholds.",
+    "To test reproducibility, re-run at least one workload (e.g., `treatment_single_link_attacks`) with the same configuration and `random_seed` but a different `--out-dir`, then compare hashes of the telemetry files (e.g., using `sha256sum`) or programmatic hashing in Python to confirm bitwise-identical outputs.",
+    "Record any deviations from the expected metric ranges or reproducibility guarantees in a run log (e.g., `experiments/ch06/runs/run_log.md`) for later debugging and potential model adjustment.",
+    "Optionally, open the corresponding notebook in `notebooks/ch06/` (e.g., `notebooks/ch06/01_inspect_telemetry.ipynb`) to visualize QBER time series, key rates, and attack intervals, confirming qualitative behavior matches expectations from QKD theory and threat modeling."
+  ],
+  "evidence_schema": {
+    "metadata": {
+      "run_id": "string (UUID or timestamp-based identifier for the specific run)",
+      "experiment_id": "string (e.g., 'exp-ch06-quantum-net-sim-env-v1')",
+      "workload_name": "string (e.g., 'treatment_single_link_attacks')",
+      "config_path": "string (relative path to YAML/JSON used for the run)",
+      "config_sha256": "string (SHA256 hash of the configuration file)",
+      "random_seed": "integer",
+      "simulator_git_commit": "string (short or full git commit hash of the repository at run time)",
+      "python_version": "string (as reported by sys.version)",
+      "library_versions": {
+        "numpy": "string",
+        "pandas": "string",
+        "pyyaml": "string",
+        "pydantic": "string"
+      },
+      "hardware_info": {
+        "cpu_model": "string",
+        "num_cores": "integer",
+        "ram_gb": "number"
+      },
+      "os_info": {
+        "name": "string",
+        "version": "string"
+      },
+      "runtime_stats": {
+        "simulation_runtime_seconds": "number",
+        "memory_footprint_peak_mb": "number"
+      },
+      "validation_status": "string ('passed' | 'failed' | 'not_run')",
+      "validation_errors": [
+        "string (human-readable description of validation failures, if any)"
+      ]
+    },
+    "telemetry_files": [
+      {
+        "path": "string (relative path to telemetry file, e.g., 'experiments/ch06/runs/.../telemetry.csv')",
+        "format": "string ('csv' | 'parquet')",
+        "num_rows": "integer",
+        "num_columns": "integer",
+        "schema_version": "string (simulator-defined schema version, e.g., 'v1')",
+        "column_types": {
+          "time_step": "int64",
+          "frame_id": "int64",
+          "link_id": "string",
+          "topology_node_src": "string",
+          "topology_node_dst": "string",
+          "scenario_id": "string",
+          "scenario_type": "string ('benign' | 'attack')",
+          "attack_name": "string or null",
+          "emitted_photons": "int64",
+          "detected_photons": "int64",
+          "dark_counts": "int64",
+          "error_bits": "int64",
+          "qber": "float64",
+          "sifted_key_bits": "int64",
+          "secret_key_bits_estimated": "float64",
+          "channel_loss_db": "float64",
+          "link_distance_km": "float64",
+          "fiber_loss_db_per_km": "float64",
+          "detector_efficiency": "float64",
+          "background_noise_level": "float64",
+          "misalignment_angle": "float64",
+          "dropout_flag": "bool",
+          "calibration_event_flag": "bool"
+        }
+      }
+    ],
+    "metrics": {
+      "mean_qber_benign": "number",
+      "std_qber_benign": "number",
+      "mean_qber_attack": {
+        "overall": "number",
+        "by_attack_name": {
+          "intercept_resend_eavesdropping": "number (optional if present)",
+          "jamming_or_dos": "number (optional if present)",
+          "misconfiguration": "number (optional if present)"
+        }
+      },
+      "qber_attack_benign_ratio": {
+        "overall": "number",
+        "by_attack_name": {
+          "intercept_resend_eavesdropping": "number (optional if present)",
+          "jamming_or_dos": "number (optional if present)",
+          "misconfiguration": "number (optional if present)"
+        }
+      },
+      "mean_secret_key_rate_benign": "number",
+      "mean_secret_key_rate_attack": {
+        "overall": "number",
+        "by_attack_name": {
+          "intercept_resend_eavesdropping": "number (optional if present)",
+          "jamming_or_dos": "number (optional if present)",
+          "misconfiguration": "number (optional if present)"
+        }
+      },
+      "distance_loss_correlation": "number",
+      "distance_keyrate_correlation": "number",
+      "telemetry_schema_compliance_rate": "number",
+      "run_reproducibility_rate": "number (computed across multiple runs of the same config, stored in a separate aggregate evidence record if needed)",
+      "simulation_runtime": "number",
+      "memory_footprint_peak": "number"
+    }
+  }
+}

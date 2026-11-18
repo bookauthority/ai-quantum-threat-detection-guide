@@ -1,0 +1,719 @@
+{
+  "experiment_id": "exp-ch11-soc-siem-integration-v1",
+  "hypothesis": "A structured, quantum-aware SOC/SIEM integration layer that normalizes alerts, enriches them with quantum-specific context, and exposes them via standard SOC-friendly interfaces (JSON events, REST APIs, and webhooks) will reduce median incident triage time (MTTR) and missed-incident rate, at the cost of an acceptable and measurable increase in alert volume and SIEM ingestion load, compared to a naive integration that forwards raw model outputs as generic anomalies.",
+  "baseline": {
+    "name": "Naive SOC/SIEM integration of quantum detection alerts",
+    "description": "The AI-based quantum detection pipeline (from Chapter 10) pushes alerts directly into a mock SIEM or log collector as generic anomaly events without quantum-specific fields or SOC-aligned severities. Mapping to SOC concepts is minimal: alerts contain only generic fields like timestamp, source, model_score, and free-text description. No dedicated alert enrichment, no playbook mapping, and no quantum channel health dashboard are provided. SOC triage is simulated using a simple analyst script that reads from a generic alert index and decides on actions without structured guidance or pre-linked playbooks.",
+    "implementation_outline": {
+      "alert_schema": {
+        "fields": [
+          "timestamp",
+          "alert_id",
+          "model_name",
+          "model_score",
+          "raw_features_hash",
+          "free_text_message"
+        ],
+        "notes": "No explicit quantum metrics (QBER, key_rate), no severity mapping, no correlation_id to classical events."
+      },
+      "siem_ingest": {
+        "transport": "HTTP POST webhook to /ingest/alerts-naive",
+        "format": "Line-delimited JSON, one alert per line",
+        "storage": "Mock SIEM backend storing events in a single 'alerts' collection or index"
+      },
+      "ticketing": {
+        "behavior": "No automatic ticket creation. A separate script can be run to manually inspect alerts but does not create structured incidents by default."
+      },
+      "dashboards": {
+        "status": "None specific to quantum; generic alert count over time only."
+      }
+    }
+  },
+  "treatment": {
+    "name": "Quantum-aware SOC/SIEM integration with enrichment and playbooks",
+    "description": "The same AI-based quantum detection pipeline is integrated via a quantum-aware alert normalization and enrichment service that emits SOC-aligned events. Alerts include structured quantum metrics and context, normalized severities, and references to specific playbooks. A mock SIEM receives these enriched alerts into dedicated indexes, auto-creates tickets based on rules, and exposes a focused dashboard for quantum channel health and threats. Triage workflows are tested via scripted analyst drills operating on this enriched view.",
+    "implementation_outline": {
+      "alert_schema": {
+        "fields": [
+          "timestamp",
+          "alert_id",
+          "pipeline_run_id",
+          "model_name",
+          "model_version",
+          "model_score",
+          "score_threshold",
+          "severity",
+          "confidence",
+          "quantum_context.qber",
+          "quantum_context.key_rate",
+          "quantum_context.channel_id",
+          "quantum_context.link_role",
+          "quantum_context.sim_attack_type",
+          "quantum_context.sim_attack_confidence",
+          "classical_context.src_ip",
+          "classical_context.dst_ip",
+          "classical_context.src_port",
+          "classical_context.dst_port",
+          "classical_context.device_id",
+          "correlation_id",
+          "correlated_events_ids",
+          "playbook_id",
+          "playbook_name",
+          "recommended_actions",
+          "labels",
+          "raw_features_ref"
+        ],
+        "notes": "Severity is mapped to SOC levels (e.g., low/medium/high/critical). playbook_id and labels enable direct linkage into triage workflows and dashboards."
+      },
+      "enrichment_engine": {
+        "functions": [
+          "Map model_score to severity via configurable thresholds and risk rules.",
+          "Join quantum metrics (QBER, key rate, channel health) from telemetry store keyed by channel_id and timestamp.",
+          "Join classical context (IP, device_id) using correlation_id or time-window joins with classical logs.",
+          "Assign playbook_id and recommended_actions based on sim_attack_type and severity."
+        ],
+        "deployment": "Python microservice (FastAPI/Flask) with REST endpoint /alerts/enrich"
+      },
+      "siem_ingest": {
+        "transport": "HTTP POST webhook to /ingest/alerts-quantum-aware",
+        "format": "Line-delimited JSON, one enriched alert per line",
+        "storage": "Mock SIEM backend with separate indexes: 'quantum_alerts', 'classical_events', 'incidents'"
+      },
+      "ticketing": {
+        "behavior": "Automatic incident creation for alerts with severity >= configurable threshold (e.g., high). Each incident includes linked alerts, playbook reference, and status fields (open, investigating, contained, closed)."
+      },
+      "dashboards": {
+        "panels": [
+          "Quantum Channel Health: time-series of QBER, key_rate, and alert density per channel_id.",
+          "Threat Overview: counts of alerts by severity, sim_attack_type, and playbook_id.",
+          "MTTR and Workflow KPIs: median and distribution of triage times per incident, number of steps executed vs. recommended_actions."
+        ],
+        "implementation": "Simple web UI (e.g., Flask + JavaScript) or notebook-based dashboards reading from mock SIEM collections."
+      }
+    }
+  },
+  "workloads": [
+    {
+      "name": "W1-simulated-quantum-attack-campaigns",
+      "description": "Replay fixed, reproducible telemetry streams generated by the Chapter 6 simulator and processed through the Chapter 10 reference pipeline, covering a mix of benign operation, eavesdropping attacks, jamming, misconfiguration, and intermittent failures on multiple channels.",
+      "input_spec": {
+        "source": "Pre-generated datasets in the repository (e.g., data/sim_campaigns/campaign_*.parquet)",
+        "composition": {
+          "benign_percentage": 70,
+          "attack_percentage": 30,
+          "attack_mix": {
+            "intercept_resend": 0.4,
+            "photon_number_splitting": 0.3,
+            "jamming": 0.2,
+            "misconfiguration": 0.1
+          }
+        },
+        "time_span_minutes": 240,
+        "channels": 5
+      },
+      "usage": {
+        "baseline": "Feed telemetry into the baseline detection pipeline and forward resulting alerts as naive events.",
+        "treatment": "Feed identical telemetry into the detection pipeline, then through the enrichment engine into the quantum-aware SIEM integration."
+      }
+    },
+    {
+      "name": "W2-simulated-incident-drills",
+      "description": "Pre-scripted incident scenarios combining multiple alerts into logically coherent incidents, to drive analyst triage workflows and measure MTTR and decision quality.",
+      "input_spec": {
+        "scenarios": [
+          {
+            "scenario_id": "scn-qkd-eavesdrop-01",
+            "description": "Sustained QBER increase on channel_1 with correlated model alerts indicating intercept-resend.",
+            "ground_truth": {
+              "is_incident": true,
+              "incident_type": "eavesdropping",
+              "affected_channels": [
+                "channel_1"
+              ],
+              "start_time_offset_min": 30,
+              "end_time_offset_min": 90
+            }
+          },
+          {
+            "scenario_id": "scn-jamming-burst-01",
+            "description": "Short jamming burst across channels_2 and channel_3 causing severe key rate drop and loss spikes.",
+            "ground_truth": {
+              "is_incident": true,
+              "incident_type": "jamming",
+              "affected_channels": [
+                "channel_2",
+                "channel_3"
+              ],
+              "start_time_offset_min": 120,
+              "end_time_offset_min": 135
+            }
+          },
+          {
+            "scenario_id": "scn-benign-maintenance-01",
+            "description": "Planned maintenance window with benign but noisy telemetry changes.",
+            "ground_truth": {
+              "is_incident": false,
+              "incident_type": "maintenance",
+              "affected_channels": [
+                "channel_4"
+              ],
+              "start_time_offset_min": 150,
+              "end_time_offset_min": 180
+            }
+          }
+        ],
+        "scenario_manifest_path": "experiments/ch11/workloads/scenario_manifest.yaml"
+      },
+      "usage": {
+        "baseline": "Analyst or script interacts with naive alerts via generic queries grouped by scenario time windows.",
+        "treatment": "Analyst or script interacts with enriched incidents and dashboards to triage the same scenarios."
+      }
+    },
+    {
+      "name": "W3-analyst-triage-simulation",
+      "description": "Scripted or semi-manual analyst interaction with alerts and incidents to approximate SOC workflows, with logging of decision timestamps and outcomes.",
+      "input_spec": {
+        "analyst_profiles": [
+          {
+            "id": "analyst_script_naive",
+            "mode": "fully_scripted",
+            "rules": "Rule-based triage using model_score thresholds and free-text pattern matching for naive alerts."
+          },
+          {
+            "id": "analyst_script_enriched",
+            "mode": "fully_scripted",
+            "rules": "Rule-based triage using severity, sim_attack_type, playbook_id, and quantum context."
+          }
+        ],
+        "session_length_minutes": 60
+      },
+      "usage": {
+        "baseline": "Run analyst_script_naive over naive alert stream; record triage events.",
+        "treatment": "Run analyst_script_enriched over enriched alerts/incidents; record triage events."
+      }
+    }
+  ],
+  "controls": {
+    "data_controls": [
+      "Use exactly the same telemetry inputs (same simulator seeds and dataset files) for baseline and treatment runs.",
+      "Freeze detection model parameters (weights, thresholds) between baseline and treatment; no retraining between conditions.",
+      "Ensure alert scoring thresholds in the detection pipeline are identical for baseline and treatment."
+    ],
+    "environment_controls": [
+      "Run baseline and treatment on the same hardware type (CPU/GPU configuration) and OS image.",
+      "Pin Python and library versions (FastAPI/Flask, pandas, numpy, PyTorch, HTTP client libraries) using a locked requirements.txt or Poetry lock file.",
+      "Disable non-deterministic parallelism where feasible (set PYTHONHASHSEED, torch and numpy seeds, and single-threaded BLAS if needed for repeatability)."
+    ],
+    "operational_controls": [
+      "Use the same SIEM mock implementation for both conditions, with configuration differences limited to index names and routing rules.",
+      "Use the same triage scripts and underlying decision logic, parameterized only by the available fields (naive vs. enriched).",
+      "Repeat each workload at least N=5 times per condition to capture variability; randomize execution order (baseline vs. treatment) to mitigate temporal bias."
+    ]
+  },
+  "metrics": [
+    {
+      "name": "alert_volume_rate",
+      "unit": "alerts_per_minute",
+      "description": "Number of alerts emitted by the detection pipeline and ingested by the SIEM per minute, per channel and overall."
+    },
+    {
+      "name": "incident_count",
+      "unit": "incidents",
+      "description": "Number of distinct incidents created in the mock ticketing system for a given workload run."
+    },
+    {
+      "name": "median_mttr",
+      "unit": "seconds",
+      "description": "Median mean time to resolution (MTTR) across all incidents in a run, measured from first relevant alert timestamp to incident status 'closed'."
+    },
+    {
+      "name": "p95_mttr",
+      "unit": "seconds",
+      "description": "95th percentile triage time across all incidents in a run."
+    },
+    {
+      "name": "missed_incident_rate",
+      "unit": "fraction",
+      "description": "Fraction of ground-truth incidents (from workload scenarios) that do not result in any incident being opened and correctly labeled in the mock SOC."
+    },
+    {
+      "name": "false_positive_rate",
+      "unit": "fraction",
+      "description": "Fraction of opened incidents that correspond to benign scenarios (e.g., planned maintenance) or noise, relative to total opened incidents."
+    },
+    {
+      "name": "alert_to_incident_ratio",
+      "unit": "dimensionless",
+      "description": "Number of alerts per opened incident (alerts_count / incident_count), as a proxy for SOC workload per incident."
+    },
+    {
+      "name": "correlation_latency",
+      "unit": "milliseconds",
+      "description": "Time between arrival of an alert and completion of enrichment/correlation (availability of enriched alert in SIEM)."
+    },
+    {
+      "name": "dashboard_query_latency",
+      "unit": "milliseconds",
+      "description": "Time to render standard dashboard views (quantum channel health, threat overview) under test query loads."
+    },
+    {
+      "name": "analyst_steps_per_incident",
+      "unit": "steps",
+      "description": "Number of discrete triage actions (queries, drilldowns, state transitions) executed per incident by the simulated analyst scripts."
+    }
+  ],
+  "success_criteria": {
+    "primary": [
+      {
+        "metric": "median_mttr",
+        "comparison": "treatment < baseline",
+        "threshold": 0.8,
+        "unit": "ratio",
+        "description": "The treatment's median MTTR should be at most 80% of the baseline median MTTR (i.e., at least a 20% reduction), aggregated across repeated runs."
+      },
+      {
+        "metric": "missed_incident_rate",
+        "comparison": "treatment <= baseline",
+        "threshold": 1.0,
+        "unit": "ratio",
+        "description": "Treatment should not increase the missed incident rate relative to baseline; ideally it reduces it, but non-increase is a minimum bar."
+      }
+    ],
+    "secondary": [
+      {
+        "metric": "false_positive_rate",
+        "comparison": "treatment <= 1.2 * baseline",
+        "threshold": 1.2,
+        "unit": "ratio",
+        "description": "False positive rate under treatment should not exceed 120% of baseline, to ensure improvements are not purely due to over-alerting."
+      },
+      {
+        "metric": "alert_volume_rate",
+        "comparison": "treatment <= 1.5 * baseline",
+        "threshold": 1.5,
+        "unit": "ratio",
+        "description": "Alert volume increase under treatment should be bounded (\u2264 50% above baseline) to remain operationally acceptable."
+      },
+      {
+        "metric": "correlation_latency",
+        "comparison": "treatment <= 250",
+        "threshold": 250,
+        "unit": "milliseconds",
+        "description": "Additional enrichment and correlation overhead should keep per-alert processing latency under 250 ms on the reference environment."
+      }
+    ],
+    "exploratory": [
+      {
+        "metric": "analyst_steps_per_incident",
+        "comparison": "treatment < baseline",
+        "threshold": null,
+        "unit": "difference",
+        "description": "Investigate whether enriched alerts and playbooks reduce the number of steps needed to close an incident."
+      }
+    ]
+  },
+  "failure_modes": [
+    {
+      "name": "Excessive_alert_volume",
+      "description": "Treatment generates significantly higher alert volume (e.g., more than 2x baseline), leading to alert fatigue in a real SOC.",
+      "detection": "Compare alert_volume_rate and alert_to_incident_ratio; flag if treatment/baseline ratio exceeds 2.0."
+    },
+    {
+      "name": "Increased_missed_incidents",
+      "description": "Enrichment or mapping errors cause ground-truth incidents to be dropped or incorrectly grouped, increasing missed_incident_rate.",
+      "detection": "Compute missed_incident_rate per scenario; flag if treatment > baseline for any scenario by a significant margin (e.g., +10 percentage points)."
+    },
+    {
+      "name": "High_correlation_latency",
+      "description": "Enrichment engine introduces unacceptable processing delays, making alerts unsuitable for near-real-time response.",
+      "detection": "Monitor correlation_latency; flag if p95 correlation_latency exceeds 500 ms or if it doubles compared to baseline SIEM ingestion latency."
+    },
+    {
+      "name": "Overloaded_mock_siem",
+      "description": "Increased event complexity causes the mock SIEM to degrade significantly (e.g., dashboard_query_latency grows beyond specified bounds).",
+      "detection": "Measure dashboard_query_latency under standardized load; flag if p95 > 1000 ms or error rates increase materially."
+    },
+    {
+      "name": "Playbook_misclassification",
+      "description": "Incorrect mapping of alerts to playbooks (wrong sim_attack_type or missing quantum context) leads to inappropriate recommended actions.",
+      "detection": "During W2 scenario drills, compare playbook_id and recommended_actions against ground_truth incident_type; flag mismatches."
+    }
+  ],
+  "required_environment": {
+    "hardware": {
+      "cpu": "4 vCPUs or 4-core CPU (e.g., Intel x86_64 or ARM64 equivalent)",
+      "memory_gb": 16,
+      "storage_gb": 20,
+      "notes": "GPU not required; detection model is assumed to run on CPU for this integration experiment, reusing pre-trained models where needed."
+    },
+    "software": {
+      "os": "Linux (Ubuntu 22.04 LTS or equivalent) or macOS 13+; Windows 11 with WSL2 acceptable.",
+      "python": "Python 3.10.x",
+      "dependencies": [
+        "numpy==1.26.4",
+        "pandas==2.2.2",
+        "scikit-learn==1.5.1",
+        "torch==2.3.0",
+        "fastapi==0.111.0 or flask==3.0.3 (one of these for APIs)",
+        "uvicorn==0.30.1 (if using FastAPI)",
+        "requests==2.32.3",
+        "pydantic==2.7.4",
+        "matplotlib==3.9.0 or plotly==5.22.0 (for dashboards/plots)",
+        "pytest==8.2.0 (for automated test harness)",
+        "orjson==3.10.0 (optional, for faster JSON handling)"
+      ],
+      "mock_siem_components": [
+        "Lightweight HTTP ingestion service implemented in Python (FastAPI/Flask) with endpoints /ingest/alerts-naive and /ingest/alerts-quantum-aware.",
+        "In-memory or file-backed storage (e.g., SQLite or simple JSONL files) to represent SIEM indexes.",
+        "Simple web dashboard or Jupyter notebooks to visualize metrics and support queries."
+      ]
+    },
+    "repository_layout": {
+      "root": "https://github.com/bookauthority/ai-quantum-threat-detection-guide",
+      "paths": {
+        "simulator": "src/simulation/",
+        "pipeline": "src/pipeline/",
+        "integration": "src/integration/soc_siem/",
+        "experiments": "experiments/ch11/",
+        "configs": "experiments/ch11/config/",
+        "scripts": "experiments/ch11/scripts/"
+      }
+    },
+    "configuration": {
+      "env_vars": [
+        "AQTDG_ENV=ch11_experiment",
+        "AQTDG_CONFIG_DIR=experiments/ch11/config",
+        "AQTDG_DATA_DIR=data/sim_campaigns",
+        "AQTDG_RESULTS_DIR=results/ch11"
+      ],
+      "ports": {
+        "mock_siem_http": 8081,
+        "enrichment_service_http": 8082
+      }
+    }
+  },
+  "run_instructions": [
+    "1. Clone the repository and set up environment:",
+    "   - git clone https://github.com/bookauthority/ai-quantum-threat-detection-guide.git",
+    "   - cd ai-quantum-threat-detection-guide",
+    "   - python -m venv .venv && source .venv/bin/activate (or equivalent on Windows)",
+    "   - pip install --upgrade pip",
+    "   - pip install -r requirements.txt (ensure versions match the 'required_environment' section).",
+    "",
+    "2. Generate or fetch simulation datasets (if not already present):",
+    "   - Run: python src/simulation/generate_campaigns.py --config experiments/ch11/config/sim_campaigns.yaml --output data/sim_campaigns/",
+    "   - Verify that files like data/sim_campaigns/campaign_01.parquet exist.",
+    "",
+    "3. Prepare the reference detection pipeline outputs:",
+    "   - Run: python src/pipeline/run_pipeline_offline.py --config experiments/ch11/config/pipeline_offline.yaml --input-dir data/sim_campaigns --output-dir data/pipeline_outputs/ch11",
+    "   - This should produce alert candidates in a neutral internal format (e.g., JSONL) under data/pipeline_outputs/ch11/",
+    "   - Confirm presence of files such as data/pipeline_outputs/ch11/campaign_01_alerts.jsonl.",
+    "",
+    "4. Start the mock SIEM backend:",
+    "   - In a new terminal (with the same virtualenv), run:",
+    "     python src/integration/soc_siem/mock_siem_server.py --config experiments/ch11/config/mock_siem.yaml",
+    "   - This should start an HTTP service on port 8081 (or as configured) with endpoints:",
+    "     * POST /ingest/alerts-naive",
+    "     * POST /ingest/alerts-quantum-aware",
+    "     * GET  /query/incidents",
+    "     * GET  /metrics",
+    "",
+    "5. Baseline condition: naive SOC integration",
+    "   5.1. Configure baseline integration:",
+    "       - Ensure experiments/ch11/config/integration_baseline.yaml points to:",
+    "         * siem_ingest_url: http://localhost:8081/ingest/alerts-naive",
+    "         * alert_schema: 'naive'",
+    "   5.2. Run baseline alert forwarding for workload W1:",
+    "       - python experiments/ch11/scripts/run_baseline_forwarder.py \\",
+    "         --config experiments/ch11/config/integration_baseline.yaml \\",
+    "         --alerts-dir data/pipeline_outputs/ch11 \\",
+    "         --workload-config experiments/ch11/workloads/w1_campaigns.yaml \\",
+    "         --results-dir results/ch11/baseline/w1",
+    "       - This script reads pipeline alerts and posts them as naive alerts to the mock SIEM.",
+    "   5.3. Run baseline triage simulation for W2 and W3:",
+    "       - python experiments/ch11/scripts/run_triage_simulation.py \\",
+    "         --mode baseline \\",
+    "         --scenario-manifest experiments/ch11/workloads/scenario_manifest.yaml \\",
+    "         --analyst-profile analyst_script_naive \\",
+    "         --siem-url http://localhost:8081 \\",
+    "         --results-dir results/ch11/baseline/triage",
+    "       - This will query the naive alerts and apply rule-based triage; it logs incident open/close times, decisions, and links to ground-truth scenarios.",
+    "",
+    "6. Start the enrichment and integration service for treatment:",
+    "   - In another terminal, start the enrichment engine:",
+    "     python src/integration/soc_siem/enrichment_service.py --config experiments/ch11/config/enrichment_treatment.yaml",
+    "   - This service should listen on port 8082 (or configured) and expose:",
+    "     * POST /alerts/enrich",
+    "",
+    "7. Treatment condition: quantum-aware SOC integration",
+    "   7.1. Configure treatment integration:",
+    "       - Ensure experiments/ch11/config/integration_treatment.yaml points to:",
+    "         * enrichment_url: http://localhost:8082/alerts/enrich",
+    "         * siem_ingest_url: http://localhost:8081/ingest/alerts-quantum-aware",
+    "         * alert_schema: 'quantum_aware'",
+    "   7.2. Run treatment alert forwarding for workload W1:",
+    "       - python experiments/ch11/scripts/run_treatment_forwarder.py \\",
+    "         --config experiments/ch11/config/integration_treatment.yaml \\",
+    "         --alerts-dir data/pipeline_outputs/ch11 \\",
+    "         --workload-config experiments/ch11/workloads/w1_campaigns.yaml \\",
+    "         --results-dir results/ch11/treatment/w1",
+    "       - This script posts alerts to the enrichment service and forwards enriched alerts to the mock SIEM.",
+    "   7.3. Run treatment triage simulation for W2 and W3:",
+    "       - python experiments/ch11/scripts/run_triage_simulation.py \\",
+    "         --mode treatment \\",
+    "         --scenario-manifest experiments/ch11/workloads/scenario_manifest.yaml \\",
+    "         --analyst-profile analyst_script_enriched \\",
+    "         --siem-url http://localhost:8081 \\",
+    "         --results-dir results/ch11/treatment/triage",
+    "       - This uses enriched alerts and incidents, leveraging severity, quantum_context, sim_attack_type, and playbook_id.",
+    "",
+    "8. Repeat runs to capture variability:",
+    "   - For each of baseline and treatment, repeat Steps 5.2\u20135.3 and 7.2\u20137.3 at least 5 times, using run_id or seed overrides:",
+    "       * Add: --run-id RUN001, RUN002, ... to the scripts, ensuring they write into distinct subdirectories:",
+    "         results/ch11/baseline/w1/RUN001, etc.",
+    "",
+    "9. Collect and compute metrics:",
+    "   - Run the aggregation script:",
+    "     python experiments/ch11/scripts/aggregate_metrics.py \\",
+    "       --baseline-results-dir results/ch11/baseline \\",
+    "       --treatment-results-dir results/ch11/treatment \\",
+    "       --ground-truth-config experiments/ch11/workloads/scenario_manifest.yaml \\",
+    "       --output-json results/ch11/summary_metrics.json",
+    "   - This script should:",
+    "     * Parse SIEM event and incident logs for baseline and treatment.",
+    "     * Compute metrics defined in the 'metrics' section (alert_volume_rate, incident_count, median_mttr, etc.).",
+    "     * Output a JSON file conforming to the 'evidence_schema'.",
+    "",
+    "10. Inspect dashboards (optional but recommended):",
+    "   - Launch notebook or web UI for visualization:",
+    "     jupyter notebook experiments/ch11/notebooks/ch11_dashboards.ipynb",
+    "   - Use pre-defined cells to query the mock SIEM APIs and visualize quantum channel health and incident timelines.",
+    "",
+    "11. Interpret results against success criteria:",
+    "   - Open results/ch11/summary_metrics.json and compare baseline vs. treatment aggregates.",
+    "   - Confirm whether primary and secondary success criteria are met.",
+    "",
+    "12. Archive environment details:",
+    "   - Save 'pip freeze' output to results/ch11/pip_freeze.txt.",
+    "   - Record OS information and hardware configuration into results/ch11/environment.txt for reproducibility."
+  ],
+  "evidence_schema": {
+    "type": "object",
+    "properties": {
+      "experiment_id": {
+        "type": "string",
+        "description": "Identifier of the experiment (should match this specification's experiment_id)."
+      },
+      "timestamp_utc": {
+        "type": "string",
+        "format": "date-time",
+        "description": "ISO 8601 timestamp when metrics aggregation was performed."
+      },
+      "environment": {
+        "type": "object",
+        "properties": {
+          "os": {
+            "type": "string"
+          },
+          "python_version": {
+            "type": "string"
+          },
+          "cpu_info": {
+            "type": "string"
+          },
+          "memory_gb": {
+            "type": "number"
+          },
+          "dependency_versions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "os",
+          "python_version"
+        ]
+      },
+      "runs": {
+        "type": "array",
+        "description": "Individual run-level metrics for both baseline and treatment.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "run_id": {
+              "type": "string"
+            },
+            "condition": {
+              "type": "string",
+              "enum": [
+                "baseline",
+                "treatment"
+              ]
+            },
+            "workload_id": {
+              "type": "string",
+              "enum": [
+                "W1-simulated-quantum-attack-campaigns",
+                "W2-simulated-incident-drills",
+                "W3-analyst-triage-simulation"
+              ]
+            },
+            "metrics": {
+              "type": "object",
+              "properties": {
+                "alert_volume_rate": {
+                  "type": "number"
+                },
+                "incident_count": {
+                  "type": "number"
+                },
+                "median_mttr": {
+                  "type": "number"
+                },
+                "p95_mttr": {
+                  "type": "number"
+                },
+                "missed_incident_rate": {
+                  "type": "number"
+                },
+                "false_positive_rate": {
+                  "type": "number"
+                },
+                "alert_to_incident_ratio": {
+                  "type": "number"
+                },
+                "correlation_latency": {
+                  "type": "number"
+                },
+                "dashboard_query_latency": {
+                  "type": "number"
+                },
+                "analyst_steps_per_incident": {
+                  "type": "number"
+                }
+              },
+              "additionalProperties": false
+            },
+            "notes": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run_id",
+            "condition",
+            "workload_id",
+            "metrics"
+          ]
+        }
+      },
+      "aggregates": {
+        "type": "object",
+        "description": "Aggregated statistics across runs per condition.",
+        "properties": {
+          "baseline": {
+            "type": "object",
+            "properties": {
+              "alert_volume_rate_mean": {
+                "type": "number"
+              },
+              "alert_volume_rate_std": {
+                "type": "number"
+              },
+              "median_mttr_mean": {
+                "type": "number"
+              },
+              "median_mttr_std": {
+                "type": "number"
+              },
+              "missed_incident_rate_mean": {
+                "type": "number"
+              },
+              "false_positive_rate_mean": {
+                "type": "number"
+              },
+              "correlation_latency_p95": {
+                "type": "number"
+              }
+            },
+            "additionalProperties": {
+              "type": "number"
+            }
+          },
+          "treatment": {
+            "type": "object",
+            "properties": {
+              "alert_volume_rate_mean": {
+                "type": "number"
+              },
+              "alert_volume_rate_std": {
+                "type": "number"
+              },
+              "median_mttr_mean": {
+                "type": "number"
+              },
+              "median_mttr_std": {
+                "type": "number"
+              },
+              "missed_incident_rate_mean": {
+                "type": "number"
+              },
+              "false_positive_rate_mean": {
+                "type": "number"
+              },
+              "correlation_latency_p95": {
+                "type": "number"
+              }
+            },
+            "additionalProperties": {
+              "type": "number"
+            }
+          }
+        }
+      },
+      "success_evaluation": {
+        "type": "object",
+        "description": "Evaluation of success criteria based on aggregated metrics.",
+        "properties": {
+          "primary": {
+            "type": "object",
+            "properties": {
+              "median_mttr_reduction_met": {
+                "type": "boolean"
+              },
+              "missed_incident_rate_non_increase_met": {
+                "type": "boolean"
+              }
+            }
+          },
+          "secondary": {
+            "type": "object",
+            "properties": {
+              "false_positive_rate_within_bound": {
+                "type": "boolean"
+              },
+              "alert_volume_rate_within_bound": {
+                "type": "boolean"
+              },
+              "correlation_latency_within_bound": {
+                "type": "boolean"
+              }
+            }
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "required": [
+      "experiment_id",
+      "timestamp_utc",
+      "environment",
+      "runs",
+      "aggregates",
+      "success_evaluation"
+    ]
+  }
+}

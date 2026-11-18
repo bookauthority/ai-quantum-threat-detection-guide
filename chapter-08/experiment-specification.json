@@ -1,0 +1,692 @@
+{
+  "experiment_id": "exp-ch08-baseline-ai-models-quantum-anomaly-detection-v1",
+  "hypothesis": "On quantum-network-like telemetry transformed into ML-ready datasets, (1) unsupervised anomaly detectors trained only on benign data will achieve usable recall but lower precision on attack events than supervised tree-ensemble classifiers trained on labeled data; and (2) augmenting both approaches with simple time-windowed sequence features will improve detection performance (especially recall at fixed false-positive rates) over non-windowed, per-record baselines.",
+  "baseline": {
+    "description": "Non-sequence, per-record ML baselines for anomaly and attack detection on quantum-network-like telemetry generated and preprocessed by Chapters 6\u20137.",
+    "tasks": [
+      {
+        "id": "baseline-unsupervised-static",
+        "name": "Unsupervised anomaly detection on static feature vectors",
+        "goal": "Detect anomalous records using only benign training data and point-in-time feature vectors.",
+        "models": [
+          {
+            "model_id": "iforest-static",
+            "type": "IsolationForest",
+            "library": "scikit-learn",
+            "hyperparameters": {
+              "n_estimators": 200,
+              "max_samples": "auto",
+              "contamination": 0.01,
+              "max_features": 1.0,
+              "bootstrap": false,
+              "random_state": 42,
+              "n_jobs": -1
+            }
+          },
+          {
+            "model_id": "ocsvm-static",
+            "type": "OneClassSVM",
+            "library": "scikit-learn",
+            "hyperparameters": {
+              "kernel": "rbf",
+              "gamma": "scale",
+              "nu": 0.01,
+              "shrinking": true,
+              "tol": 0.001,
+              "cache_size": 512
+            }
+          }
+        ],
+        "data_requirements": {
+          "train_split": "train_benign_only",
+          "validation_split": "val_mixed",
+          "test_split": "test_mixed",
+          "features": "static_feature_vector_v1",
+          "labels": {
+            "primary_label": "is_attack_binary",
+            "attack_type_label": "attack_type_enum"
+          },
+          "assumptions": [
+            "Train split is filtered to contain only benign (is_attack_binary == 0) samples.",
+            "Validation and test splits contain both benign and attack samples with realistic class imbalance.",
+            "Feature preprocessing (scaling/encoding) is fit on benign training data only and applied consistently to all splits."
+          ]
+        }
+      },
+      {
+        "id": "baseline-supervised-static",
+        "name": "Supervised attack classification on static feature vectors",
+        "goal": "Classify records as benign or malicious (and optionally by attack type) using labeled static features.",
+        "models": [
+          {
+            "model_id": "rf-static",
+            "type": "RandomForestClassifier",
+            "library": "scikit-learn",
+            "hyperparameters": {
+              "n_estimators": 300,
+              "max_depth": null,
+              "min_samples_split": 2,
+              "min_samples_leaf": 1,
+              "max_features": "sqrt",
+              "class_weight": "balanced",
+              "bootstrap": true,
+              "random_state": 42,
+              "n_jobs": -1
+            }
+          },
+          {
+            "model_id": "gbt-static",
+            "type": "GradientBoostingClassifier",
+            "library": "scikit-learn",
+            "hyperparameters": {
+              "n_estimators": 300,
+              "learning_rate": 0.05,
+              "max_depth": 3,
+              "subsample": 0.9,
+              "random_state": 42
+            }
+          }
+        ],
+        "data_requirements": {
+          "train_split": "train_mixed",
+          "validation_split": "val_mixed",
+          "test_split": "test_mixed",
+          "features": "static_feature_vector_v1",
+          "labels": {
+            "primary_label": "is_attack_binary",
+            "secondary_label_optional": "attack_type_enum"
+          },
+          "assumptions": [
+            "Train, validation, and test splits are temporally ordered and non-overlapping to reduce leakage.",
+            "Class imbalance is significant (attacks rare); class_weight or sampling will be used.",
+            "Feature preprocessing (scaling/encoding) is fit on the training split and applied to val/test."
+          ]
+        }
+      }
+    ]
+  },
+  "treatment": {
+    "description": "Time-windowed sequence-feature baselines built from the same underlying telemetry and labels, using identical train/validation/test splits but enriched with temporal aggregation features.",
+    "tasks": [
+      {
+        "id": "treatment-unsupervised-sequence",
+        "name": "Unsupervised anomaly detection on time-windowed sequence features",
+        "goal": "Use simple sequence-derived features over fixed windows to improve unsupervised attack/anomaly detection performance.",
+        "models": [
+          {
+            "model_id": "iforest-seq",
+            "type": "IsolationForest",
+            "library": "scikit-learn",
+            "hyperparameters": {
+              "n_estimators": 200,
+              "max_samples": "auto",
+              "contamination": 0.01,
+              "max_features": 1.0,
+              "bootstrap": false,
+              "random_state": 42,
+              "n_jobs": -1
+            }
+          },
+          {
+            "model_id": "ocsvm-seq",
+            "type": "OneClassSVM",
+            "library": "scikit-learn",
+            "hyperparameters": {
+              "kernel": "rbf",
+              "gamma": "scale",
+              "nu": 0.01,
+              "shrinking": true,
+              "tol": 0.001,
+              "cache_size": 512
+            }
+          }
+        ],
+        "sequence_feature_spec": {
+          "windowing": {
+            "window_length_seconds": [
+              10,
+              60
+            ],
+            "window_stride_seconds": [
+              5,
+              30
+            ],
+            "alignment": "event_timestamp_floor",
+            "group_by_keys": [
+              "link_id",
+              "direction"
+            ]
+          },
+          "aggregations": [
+            "mean",
+            "std",
+            "min",
+            "max",
+            "median",
+            "p05",
+            "p95"
+          ],
+          "metrics": [
+            "qber",
+            "sifted_key_rate",
+            "secret_key_rate",
+            "photon_count",
+            "channel_loss_db"
+          ],
+          "event_counts": [
+            "num_benign_events",
+            "num_alarm_events",
+            "num_control_plane_errors"
+          ],
+          "temporal_deltas": [
+            "delta_qber_last_window",
+            "delta_key_rate_last_window"
+          ],
+          "labeling": {
+            "primary_window_label": "is_attack_binary_window",
+            "label_rule": "window labeled as attack if any record in window has is_attack_binary == 1"
+          }
+        },
+        "data_requirements": {
+          "train_split": "train_benign_only_windowed",
+          "validation_split": "val_mixed_windowed",
+          "test_split": "test_mixed_windowed",
+          "features": "sequence_feature_vector_v1",
+          "labels": {
+            "primary_label": "is_attack_binary_window"
+          },
+          "assumptions": [
+            "Windowing is applied consistently across baseline and treatment experiments.",
+            "Train split windows marked as attack are dropped for unsupervised training.",
+            "Overlapping windows are allowed but must not cross original split boundaries."
+          ]
+        }
+      },
+      {
+        "id": "treatment-supervised-sequence",
+        "name": "Supervised attack classification on time-windowed sequence features",
+        "goal": "Classify windows as benign or attack using simple temporal aggregations, and compare to static per-record classifiers.",
+        "models": [
+          {
+            "model_id": "rf-seq",
+            "type": "RandomForestClassifier",
+            "library": "scikit-learn",
+            "hyperparameters": {
+              "n_estimators": 300,
+              "max_depth": null,
+              "min_samples_split": 2,
+              "min_samples_leaf": 1,
+              "max_features": "sqrt",
+              "class_weight": "balanced",
+              "bootstrap": true,
+              "random_state": 42,
+              "n_jobs": -1
+            }
+          },
+          {
+            "model_id": "gbt-seq",
+            "type": "GradientBoostingClassifier",
+            "library": "scikit-learn",
+            "hyperparameters": {
+              "n_estimators": 300,
+              "learning_rate": 0.05,
+              "max_depth": 3,
+              "subsample": 0.9,
+              "random_state": 42
+            }
+          }
+        ],
+        "sequence_feature_spec_ref": "treatment-unsupervised-sequence.sequence_feature_spec",
+        "data_requirements": {
+          "train_split": "train_mixed_windowed",
+          "validation_split": "val_mixed_windowed",
+          "test_split": "test_mixed_windowed",
+          "features": "sequence_feature_vector_v1",
+          "labels": {
+            "primary_label": "is_attack_binary_window",
+            "secondary_label_optional": "attack_type_enum_window_majority"
+          },
+          "assumptions": [
+            "Windows are labeled using the same rule as in unsupervised sequence task for the primary label.",
+            "For attack_type_enum_window_majority, the modal attack_type within the window is used, ties broken deterministically.",
+            "Temporal ordering of windows is preserved in train/val/test splits to avoid leakage."
+          ]
+        }
+      }
+    ]
+  },
+  "workloads": [
+    {
+      "workload_id": "wl-quantum-telemetry-per-record",
+      "description": "Per-record ML workload on quantum-network-like telemetry exported from the simulator and data pipelines of Chapters 6\u20137.",
+      "data_source": {
+        "repository": "https://github.com/bookauthority/ai-quantum-threat-detection-guide",
+        "relative_path": "data/processed/per_record/",
+        "format": "Parquet or CSV with schema documented in README.md",
+        "expected_files": [
+          "train.parquet",
+          "val.parquet",
+          "test.parquet"
+        ]
+      },
+      "schema_expectation": {
+        "required_columns": [
+          "timestamp",
+          "link_id",
+          "direction",
+          "qber",
+          "sifted_key_rate",
+          "secret_key_rate",
+          "photon_count",
+          "channel_loss_db",
+          "classical_alarm_flag",
+          "is_attack_binary",
+          "attack_type_enum",
+          "split"
+        ],
+        "column_types": {
+          "timestamp": "datetime64[ns]",
+          "link_id": "string",
+          "direction": "string",
+          "qber": "float64",
+          "sifted_key_rate": "float64",
+          "secret_key_rate": "float64",
+          "photon_count": "float64",
+          "channel_loss_db": "float64",
+          "classical_alarm_flag": "int64",
+          "is_attack_binary": "int64",
+          "attack_type_enum": "category|string",
+          "split": "category|string"
+        }
+      },
+      "preprocessing": {
+        "feature_vector_name": "static_feature_vector_v1",
+        "steps": [
+          "Filter rows by split into train, val, test using 'split' column.",
+          "Drop rows with missing critical metrics (qber, sifted_key_rate, secret_key_rate, channel_loss_db).",
+          "Impute non-critical missing values (e.g., photon_count) using median from train split only.",
+          "One-hot encode categorical features (link_id, direction, attack_type_enum if used as feature).",
+          "Standardize continuous features (mean 0, std 1) based on train split parameters.",
+          "Persist fitted preprocessing pipeline (e.g., sklearn.Pipeline) for reuse in notebooks."
+        ]
+      },
+      "usage": {
+        "baselines": [
+          "baseline-unsupervised-static",
+          "baseline-supervised-static"
+        ],
+        "evaluation_granularity": [
+          "record_level"
+        ]
+      }
+    },
+    {
+      "workload_id": "wl-quantum-telemetry-windowed",
+      "description": "Time-windowed workload derived from quantum telemetry, with aggregated sequence features per window per link/direction.",
+      "data_source": {
+        "repository": "https://github.com/bookauthority/ai-quantum-threat-detection-guide",
+        "relative_path": "data/processed/windowed/",
+        "format": "Parquet or CSV",
+        "expected_files": [
+          "train_windowed.parquet",
+          "val_windowed.parquet",
+          "test_windowed.parquet"
+        ]
+      },
+      "schema_expectation": {
+        "required_columns": [
+          "window_start",
+          "window_end",
+          "link_id",
+          "direction",
+          "window_id",
+          "is_attack_binary_window",
+          "attack_type_enum_window_majority"
+        ],
+        "additional_feature_columns_pattern": "metric_* or agg_* for aggregated metrics",
+        "column_types": {
+          "window_start": "datetime64[ns]",
+          "window_end": "datetime64[ns]",
+          "link_id": "string",
+          "direction": "string",
+          "window_id": "string",
+          "is_attack_binary_window": "int64",
+          "attack_type_enum_window_majority": "category|string"
+        }
+      },
+      "preprocessing": {
+        "feature_vector_name": "sequence_feature_vector_v1",
+        "steps": [
+          "Verify non-overlap of windows across train/val/test splits.",
+          "Drop windows with fewer than a minimum number of events (e.g., < 3 events) if this was part of Chapter 7's design.",
+          "Impute missing aggregated metrics using train-split medians.",
+          "One-hot encode categorical features (link_id, direction).",
+          "Standardize continuous aggregated features using train-split statistics.",
+          "Persist preprocessing pipeline as for per-record workload."
+        ]
+      },
+      "usage": {
+        "treatments": [
+          "treatment-unsupervised-sequence",
+          "treatment-supervised-sequence"
+        ],
+        "evaluation_granularity": [
+          "window_level"
+        ]
+      }
+    }
+  ],
+  "controls": {
+    "dataset_controls": [
+      "Use the exact train/val/test splits produced in Chapter 7; do not reshuffle or re-split data.",
+      "Log and fix the random seed used for any additional subsampling or bootstrapping (e.g., RANDOM_STATE=42).",
+      "Verify that the proportion of attack vs. benign samples in each split matches Chapter 7's documented distribution within tolerance (e.g., \u00b11%)."
+    ],
+    "preprocessing_controls": [
+      "Fit all scalers/encoders only on training data (benign-only for unsupervised, mixed for supervised).",
+      "Apply the same preprocessing pipeline object across baseline and treatment models for a given workload.",
+      "Record the list of feature names and their order after preprocessing; use this consistently across runs."
+    ],
+    "modeling_controls": [
+      "Use fixed hyperparameter configurations as specified for the first baseline/treatment runs; do not tune per model while establishing reference baselines.",
+      "For stochastic models (e.g., RandomForest, IsolationForest), fix random_state=42 and n_jobs=-1.",
+      "Train each model once per workload for the reference experiment; do not average across multiple random initializations in this baseline specification."
+    ],
+    "evaluation_controls": [
+      "Compute all metrics on the held-out test split only, after verifying no overlap with training data.",
+      "Use consistent positive class definition: attack/is_attack_binary == 1.",
+      "When computing ROC and PR curves, use the same threshold grid and interpolation strategy across models.",
+      "Store raw prediction scores (e.g., anomaly scores, probability estimates) along with binary decisions to enable post-hoc analysis."
+    ],
+    "notebook_and_repo_controls": [
+      "Implement each major experiment as a Jupyter notebook under notebooks/ch08/ with deterministic cells (no hidden randomness beyond fixed seeds).",
+      "Pin library versions in a requirements.txt or environment.yml file and reference them in the notebooks.",
+      "Include assertions/checks in notebooks to verify dataset schemas and split integrity before training models."
+    ]
+  },
+  "metrics": [
+    {
+      "name": "roc_auc",
+      "unit": "dimensionless (0-1)",
+      "description": "Area Under the Receiver Operating Characteristic Curve for binary attack vs. benign classification."
+    },
+    {
+      "name": "pr_auc_attack",
+      "unit": "dimensionless (0-1)",
+      "description": "Area Under the Precision-Recall Curve with attack as the positive class; especially informative for imbalanced data."
+    },
+    {
+      "name": "f1_attack",
+      "unit": "dimensionless (0-1)",
+      "description": "F1-score for the attack class at a chosen decision threshold."
+    },
+    {
+      "name": "precision_at_fixed_recall",
+      "unit": "dimensionless (0-1)",
+      "description": "Precision when recall for attack class is constrained to be at least a specified target (e.g., 0.9)."
+    },
+    {
+      "name": "recall_at_fixed_fpr",
+      "unit": "dimensionless (0-1)",
+      "description": "Recall for the attack class at a fixed false positive rate (e.g., 1% FPR)."
+    },
+    {
+      "name": "confusion_matrix_counts",
+      "unit": "counts",
+      "description": "True positives, false positives, true negatives, and false negatives at a specified threshold."
+    },
+    {
+      "name": "brier_score",
+      "unit": "dimensionless (0-1)",
+      "description": "Brier score for probabilistic predictions, measuring calibration quality."
+    },
+    {
+      "name": "inference_latency_p95",
+      "unit": "milliseconds per sample or per window",
+      "description": "95th percentile time to compute model predictions on a single preprocessed sample/window, measured on the reference environment."
+    },
+    {
+      "name": "training_time",
+      "unit": "seconds",
+      "description": "Wall-clock time required to train each model on the training split in the reference environment."
+    },
+    {
+      "name": "feature_importance_variance",
+      "unit": "dimensionless",
+      "description": "Variance and ranking stability of feature importances across bootstrapped subsamples (for tree models), used qualitatively for interpretability."
+    }
+  ],
+  "success_criteria": {
+    "primary_success": [
+      "For supervised tasks, at least one tree-based baseline (rf-static or gbt-static) achieves pr_auc_attack >= 0.70 on the test split at record level, demonstrating that the datasets support non-trivial attack detection.",
+      "For unsupervised tasks, at least one anomaly detector (iforest-static or ocsvm-static) achieves recall_at_fixed_fpr (FPR=0.01) >= 0.50 at record level, indicating practical early anomaly detection capability without labeled attacks."
+    ],
+    "comparative_success": [
+      "Time-windowed supervised models (rf-seq or gbt-seq) improve pr_auc_attack on the test split by at least 5 percentage points (absolute) over their static counterparts (rf-static or gbt-static) on comparable evaluation units (e.g., mapping record-level predictions to window-level or vice versa as documented).",
+      "Time-windowed unsupervised models (iforest-seq or ocsvm-seq) achieve at least the same or higher recall_at_fixed_fpr (FPR=0.01) compared to static unsupervised models, without more than doubling the false-positive count at the same threshold."
+    ],
+    "operational_success": [
+      "All baseline and treatment models complete training on the specified reference environment within 30 minutes per model and can perform inference at <= 5 ms per sample/window at p95 latency on the test set size defined in Chapter 7.",
+      "Confusion matrices, metrics, and configuration artifacts (preprocessing parameters, hyperparameters) are saved to disk under a structured results directory (e.g., results/ch08/), enabling exact re-analysis without retraining."
+    ]
+  },
+  "failure_modes": [
+    {
+      "name": "data_leakage_across_splits",
+      "description": "Preprocessing or windowing uses information from validation/test splits (e.g., global normalization, time-window overlaps across split boundaries), inflating performance estimates.",
+      "detection": "Add checks to ensure no identical window_id or timestamp range appears in more than one split; assert that preprocessing is fit only on training data.",
+      "mitigation": "Rebuild preprocessing pipelines with strict train-only fitting; re-generate splits if necessary and re-run experiments."
+    },
+    {
+      "name": "severe_class_imbalance_breaks_metrics",
+      "description": "Extreme rarity of attacks causes unstable precision/recall and misleading ROC curves, particularly for unsupervised detectors.",
+      "detection": "Inspect class counts in each split; monitor PR curves for degeneracy (e.g., near-zero precision across thresholds).",
+      "mitigation": "Use stratified evaluation subsets, report PR-AUC along with absolute TP/FP counts, and possibly adjust contamination/nu or class_weight within the allowed hyperparameter space."
+    },
+    {
+      "name": "model_overfitting_to_simulator_artifacts",
+      "description": "Models learn quirks of the simulator (e.g., discretization patterns, unrealistic noise correlations) rather than robust attack indicators.",
+      "detection": "Perform error analysis by attack type and link_id; look for near-perfect metrics on some subsets but poor generalization to slightly perturbed simulator configurations (if such validation data is available).",
+      "mitigation": "Introduce small controlled perturbations to simulator parameters for additional validation; prioritize sequence features grounded in operational metrics (QBER, key rate trends) instead of simulator-specific indicators."
+    },
+    {
+      "name": "unstable_one_class_svm_training",
+      "description": "One-Class SVM training becomes numerically unstable or prohibitively slow for large feature sets or sample sizes.",
+      "detection": "Monitor training time and convergence warnings/logs from scikit-learn; detect wall-clock timeouts.",
+      "mitigation": "Optionally subsample benign training data, reduce feature dimensionality (e.g., PCA on benign train data), or fall back to IsolationForest as the primary unsupervised baseline in the notebook while documenting the deviation."
+    },
+    {
+      "name": "non-reproducible_results",
+      "description": "Different runs of the experiment produce materially different metrics due to unlogged randomness or environment changes.",
+      "detection": "Re-run a subset of models twice with the same configuration and compare metrics; check for large deviations (e.g., > 1 percentage point difference in roc_auc).",
+      "mitigation": "Fix all relevant random seeds, log environment and data checksums, and ensure deterministic behavior where supported (e.g., disable multithreaded non-deterministic BLAS if necessary)."
+    },
+    {
+      "name": "misaligned_thresholds_between_models",
+      "description": "Thresholds used to derive binary predictions from scores differ across models in ways that invalidate comparisons (e.g., chosen independently on test data).",
+      "detection": "Inspect notebooks to ensure threshold selection is based on validation data or fixed rules; verify documented threshold values per model.",
+      "mitigation": "Standardize threshold selection procedure (e.g., choose threshold that yields target recall or FPR on validation set) and then apply these thresholds to the test set uniformly."
+    }
+  ],
+  "required_environment": {
+    "hardware": {
+      "cpu": "4 physical cores (or 8 vCPUs) with x86_64 architecture",
+      "ram_gb": 16,
+      "disk_space_gb": 10,
+      "gpu": "Not required; all baselines use CPU-based scikit-learn models."
+    },
+    "os": {
+      "supported": [
+        "Ubuntu 22.04 LTS",
+        "macOS 13 Ventura or later",
+        "Windows 11 (with WSL2 recommended)"
+      ]
+    },
+    "software": {
+      "python_version": "3.10",
+      "packages": {
+        "numpy": ">=1.24,<2.0",
+        "pandas": ">=1.5,<2.0",
+        "scikit-learn": ">=1.3,<2.0",
+        "matplotlib": ">=3.7,<4.0",
+        "seaborn": ">=0.12,<1.0",
+        "jupyterlab": ">=3.6,<4.0",
+        "pyyaml": ">=6.0,<7.0"
+      },
+      "environment_management": "Conda or venv; environment specification file provided as envs/ch08-environment.yml in the repository."
+    },
+    "repository_layout": {
+      "root_url": "https://github.com/bookauthority/ai-quantum-threat-detection-guide",
+      "required_paths": [
+        "data/processed/per_record/",
+        "data/processed/windowed/",
+        "notebooks/ch08/",
+        "results/ch08/",
+        "envs/ch08-environment.yml"
+      ]
+    }
+  },
+  "run_instructions": {
+    "environment_setup": [
+      "Clone the repository: git clone https://github.com/bookauthority/ai-quantum-threat-detection-guide.git",
+      "cd ai-quantum-threat-detection-guide",
+      "Create the conda environment: conda env create -f envs/ch08-environment.yml",
+      "Activate the environment: conda activate ai-quantum-threat-ch08",
+      "Verify Python and package versions match the required_environment specification."
+    ],
+    "data_preparation": [
+      "Ensure Chapters 6 and 7 notebooks have been executed to generate processed datasets under data/processed/per_record/ and data/processed/windowed/.",
+      "Run the data integrity check script (if provided) or execute notebooks/ch07/07x_data_validation.ipynb to confirm schema and splits.",
+      "Confirm that expected files exist: data/processed/per_record/{train,val,test}.parquet and data/processed/windowed/{train_windowed,val_windowed,test_windowed}.parquet."
+    ],
+    "experiment_execution": [
+      "Open JupyterLab: jupyter lab",
+      "For per-record baselines, run notebooks/ch08/08_2_unsupervised_static_baselines.ipynb (IsolationForest and One-Class SVM) and notebooks/ch08/08_3_supervised_static_baselines.ipynb (RandomForest and GradientBoosting).",
+      "For windowed treatments, run notebooks/ch08/08_4_sequence_feature_baselines.ipynb (both unsupervised and supervised models using time-windowed features).",
+      "Within each notebook, ensure that the RANDOM_STATE (or equivalent) variable is set to 42 and that the environment metadata (Python version, library versions) is logged.",
+      "Allow each notebook to run to completion; metrics, confusion matrices, and model artifacts should be written under results/ch08/ in structured subdirectories (e.g., results/ch08/{model_id}/)."
+    ],
+    "reproducibility_checks": [
+      "After initial successful runs, restart the Jupyter kernel and re-run at least one baseline and one treatment notebook to validate reproducibility of key metrics.",
+      "Compare generated metrics JSON files in results/ch08/ between runs to ensure differences (if any) are within expected numerical tolerance (e.g., < 1e-6 for deterministic metrics)."
+    ]
+  },
+  "evidence_schema": {
+    "description": "Structure of artifacts to be produced when the experiment is run, enabling later analysis, comparison, and inclusion in the book.",
+    "artifacts": [
+      {
+        "type": "metrics_summary",
+        "format": "JSON",
+        "path_pattern": "results/ch08/{model_id}/metrics_{workload_id}.json",
+        "content_schema": {
+          "model_id": "string",
+          "workload_id": "string",
+          "task_id": "string",
+          "data_split": "string (e.g., 'test')",
+          "timestamp_utc": "ISO 8601 string",
+          "metrics": {
+            "roc_auc": "float",
+            "pr_auc_attack": "float",
+            "f1_attack": "float",
+            "precision_at_fixed_recall": {
+              "target_recall": "float",
+              "precision": "float",
+              "threshold": "float"
+            },
+            "recall_at_fixed_fpr": {
+              "target_fpr": "float",
+              "recall": "float",
+              "threshold": "float"
+            },
+            "brier_score": "float",
+            "inference_latency_p95_ms": "float",
+            "training_time_s": "float"
+          },
+          "metadata": {
+            "python_version": "string",
+            "library_versions": {
+              "numpy": "string",
+              "pandas": "string",
+              "scikit_learn": "string"
+            },
+            "random_seed": "int",
+            "preprocessing_pipeline_id": "string",
+            "hyperparameters": "object (model-specific hyperparameters as key-value pairs)"
+          }
+        }
+      },
+      {
+        "type": "confusion_matrix",
+        "format": "JSON or CSV",
+        "path_pattern": "results/ch08/{model_id}/confusion_matrix_{workload_id}.json",
+        "content_schema": {
+          "model_id": "string",
+          "workload_id": "string",
+          "data_split": "string",
+          "threshold": "float",
+          "matrix": {
+            "tp": "int",
+            "fp": "int",
+            "tn": "int",
+            "fn": "int"
+          }
+        }
+      },
+      {
+        "type": "prediction_scores",
+        "format": "Parquet or CSV",
+        "path_pattern": "results/ch08/{model_id}/scores_{workload_id}_{split}.parquet",
+        "content_schema": {
+          "id_field": "string or int (record_id or window_id)",
+          "true_label": "int (0 or 1)",
+          "predicted_score": "float (e.g., anomaly score, probability of attack)",
+          "predicted_label": "int (0 or 1) at selected threshold",
+          "auxiliary_fields_optional": [
+            "attack_type_enum",
+            "link_id",
+            "timestamp_or_window_start"
+          ]
+        }
+      },
+      {
+        "type": "feature_importances",
+        "format": "CSV or JSON",
+        "path_pattern": "results/ch08/{model_id}/feature_importances_{workload_id}.csv",
+        "content_schema": {
+          "feature_name": "string",
+          "importance_value": "float",
+          "rank": "int"
+        }
+      },
+      {
+        "type": "experiment_log",
+        "format": "YAML or JSON",
+        "path_pattern": "results/ch08/{model_id}/run_metadata_{workload_id}.yaml",
+        "content_schema": {
+          "experiment_id": "string",
+          "model_id": "string",
+          "task_id": "string",
+          "workload_id": "string",
+          "start_time_utc": "ISO 8601 string",
+          "end_time_utc": "ISO 8601 string",
+          "env": {
+            "os": "string",
+            "python_version": "string",
+            "cpu_info": "string",
+            "ram_gb": "float"
+          },
+          "data_checks": {
+            "num_train_samples": "int",
+            "num_val_samples": "int",
+            "num_test_samples": "int",
+            "num_attack_train": "int",
+            "num_attack_val": "int",
+            "num_attack_test": "int"
+          },
+          "notes": "string (free-text for any anomalies or deviations from the specification)."
+        }
+      }
+    ],
+    "no_invented_outcomes": "All metric values, confusion matrix entries, and other results must be generated by actually running the described code on the specified datasets; this specification does not provide or assume any concrete numeric outcomes."
+  }
+}

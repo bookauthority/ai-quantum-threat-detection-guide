@@ -1,0 +1,737 @@
+{
+  "experiment_id": "exp-ch7-quantum-telemetry-to-ml-ready-datasets-v1",
+  "hypothesis": "A rigorously engineered, windowed feature and labeling pipeline that merges quantum and classical telemetry and applies imbalance-handling strategies will (a) produce ML-ready train/validation/test datasets with no measurable label leakage, (b) achieve higher downstream baseline detection performance (e.g., ROC-AUC, PR-AUC) than a naive row-level telemetry export, and (c) remain reproducible across runs via explicit dataset versioning and deterministic configuration.",
+  "baseline": {
+    "description": "Naive per-record export of simulated quantum and classical telemetry from Chapter 6 without structured windows, engineered aggregates, or explicit imbalance handling.",
+    "data_source": "Raw CSV/Parquet telemetry exported by the Chapter 6 simulator (e.g., `simulated_telemetry_raw.parquet`), containing timestamped quantum link metrics (QBER, key rate, loss, alarms) and basic classical network/device counters.",
+    "pipeline_steps": [
+      "Load raw telemetry files for one or more simulation runs.",
+      "Drop rows with missing required fields via simple row-wise deletion.",
+      "Keep only a minimal subset of fields: timestamp, link_id, qber, key_rate, loss_db, classical_if_util, label_attack (boolean or categorical).",
+      "No windowing or aggregation; each telemetry row is treated as an independent sample.",
+      "Forward-fill labels for rows where label_attack is missing using last-observed label for the same link_id; rows with no label history are dropped.",
+      "No feature scaling, normalization, or encoding beyond simple numeric casting.",
+      "Naive random 70/15/15 split into train/validation/test across the entire table without grouping by simulation run, scenario, or time.",
+      "No explicit dataset versioning; export a single `baseline_dataset.parquet` file overwriting any existing file."
+    ],
+    "expected_characteristics": [
+      "Samples are highly temporally correlated across splits, making label leakage likely.",
+      "Attack vs. non-attack class imbalance is unaddressed and reflects raw simulator prevalence.",
+      "No consistent event or window definition; downstream models must infer structure themselves.",
+      "Dataset reproducibility depends implicitly on simulator output ordering and random state but is not recorded as metadata."
+    ]
+  },
+  "treatment": {
+    "description": "Structured, configurable data pipeline that converts quantum and classical telemetry into windowed, aggregated, labeled records with explicit imbalance handling and dataset versioning.",
+    "data_source": "Same raw telemetry files as baseline, plus scenario/attack metadata files produced by the Chapter 6 simulator (e.g., `runs/<run_id>/telemetry.parquet`, `runs/<run_id>/scenario_meta.json`).",
+    "pipeline_steps": [
+      "Configuration-driven run selection",
+      "Event/window definition and alignment",
+      "Feature engineering and aggregation",
+      "Quantum-classical feature fusion",
+      "Label construction with clear policies for uncertainty",
+      "Imbalance handling and sample weighting",
+      "Data quality and leakage checks",
+      "Deterministic splitting and dataset versioning"
+    ],
+    "detailed_design": {
+      "1_config_driven_run_selection": {
+        "goal": "Ensure that the same subset of simulation runs and time ranges is used consistently across experiments and that configuration is captured as part of dataset metadata.",
+        "inputs": [
+          "Root directory for simulator outputs: `data_root` (default: `./data/sim_runs`).",
+          "List of run_ids to include or glob pattern (e.g., `run_*`).",
+          "Optional filter on scenario types (e.g., `['benign', 'eavesdrop', 'jamming']`)."
+        ],
+        "behavior": [
+          "Iterate over runs under `data_root` and load `scenario_meta.json` for each.",
+          "Filter runs based on declared scenario, attack type, or other metadata fields.",
+          "Materialize an ordered list of `selected_runs` with full paths to telemetry and metadata files."
+        ]
+      },
+      "2_event_window_definition": {
+        "goal": "Transform fine-grained telemetry into ML samples via consistent time windows or event-centered windows suitable for detection tasks.",
+        "window_types": [
+          {
+            "name": "fixed_sliding_time_window",
+            "description": "Fixed-duration windows sliding over time for each link/channel, used for continuous anomaly/attack detection.",
+            "parameters": {
+              "window_length": "e.g., 5 seconds",
+              "window_stride": "e.g., 1 second",
+              "alignment": "left-aligned on earliest timestamp in window or floored to nearest stride boundary"
+            }
+          },
+          {
+            "name": "event_centered_window",
+            "description": "Windows centered around detected or injected attack onset events, combining pre- and post-onset telemetry.",
+            "parameters": {
+              "pre_event_duration": "e.g., 10 seconds",
+              "post_event_duration": "e.g., 10 seconds",
+              "event_source": "attack_onset timestamps per run and link from `scenario_meta.json`"
+            }
+          }
+        ],
+        "indexing": {
+          "primary_keys": [
+            "run_id",
+            "link_id",
+            "window_id"
+          ],
+          "window_id_definition": "Hash of (run_id, link_id, window_start, window_end) or an incremental integer per link_id and run_id."
+        }
+      },
+      "3_feature_engineering": {
+        "goal": "Create robust, interpretable features for quantum metrics and classical telemetry within each window.",
+        "quantum_features": [
+          "qber_mean, qber_std, qber_min, qber_max",
+          "key_rate_mean, key_rate_std, key_rate_min, key_rate_max",
+          "loss_db_mean, loss_db_std, loss_db_min, loss_db_max",
+          "fraction_of_samples_with_qber_above_threshold (configurable, e.g., QBER > 0.11)",
+          "qber_trend_slope (via simple linear regression over time within window)",
+          "key_rate_trend_slope",
+          "count_of_quantum_alarms (e.g., device or protocol alarms) within window",
+          "time_since_last_quantum_alarm at window end"
+        ],
+        "classical_features": [
+          "if_util_mean, if_util_std (interface utilization %)",
+          "pkt_drop_rate_mean, pkt_drop_rate_std",
+          "jitter_mean, jitter_std",
+          "cpu_load_mean, mem_util_mean (if available)",
+          "count_of_security_events_by_severity (low, medium, high)",
+          "presence_of_relevant_syslog_signatures (binary flags)"
+        ],
+        "temporal_features": [
+          "window_duration_seconds",
+          "sample_count_in_window",
+          "time_of_day_sin, time_of_day_cos (for daily periodicity)",
+          "day_of_week_one_hot or embeddings prepared later"
+        ],
+        "statistical_descriptors": [
+          "skewness and kurtosis for qber and key_rate (for sufficiently sampled windows)",
+          "autocorrelation_lag1 for key_rate or qber (simple AR(1) proxy within window)"
+        ],
+        "normalization": {
+          "approach": "Compute feature-wise mean and std over training set only; apply z-score standardization to train/val/test using training statistics. Persist statistics in metadata for reuse.",
+          "leakage_prevention": "No normalization statistics calculated on validation or test splits."
+        }
+      },
+      "4_quantum_classical_fusion": {
+        "goal": "Represent the combined state of quantum and classical planes for a link within each window as a single feature vector.",
+        "method": [
+          "Inner-join quantum and classical telemetry on (run_id, link_id, timestamp) where appropriate; otherwise treat them as separate streams with unified windowing.",
+          "For each window, compute aggregations separately for quantum and classical features as defined above.",
+          "Concatenate features into a unified feature vector with prefixed names (e.g., `q_`, `c_` prefixes).",
+          "Ensure feature schemas are identical across runs via consistent column ordering and missing-value imputation (e.g., median imputation based on training data for numeric fields)."
+        ]
+      },
+      "5_labeling_strategy": {
+        "goal": "Assign labels to each window for supervised or semi-supervised detection tasks, while handling ambiguous time periods explicitly.",
+        "label_sources": [
+          "Per-timestamp attack flags from simulator output (if available).",
+          "Scenario-level metadata indicating attack presence, type, and approximate time interval per run and link.",
+          "Derived anomalies based on quantum metrics (e.g., QBER spike exceeding threshold over baseline) when no explicit attack ground truth exists."
+        ],
+        "label_policies": [
+          {
+            "name": "attack_window_labeling",
+            "definition": "A window is labeled `attack` (1) if the fraction of timestamps within it overlapped by a known attack is greater than or equal to a configurable threshold (e.g., 0.3).",
+            "parameters": {
+              "attack_coverage_threshold": 0.3
+            }
+          },
+          {
+            "name": "clean_window_labeling",
+            "definition": "A window is labeled `clean` (0) if it has zero overlap with any known attack interval and is not marked anomalous by derived anomaly rules.",
+            "parameters": null
+          },
+          {
+            "name": "uncertain_window_handling",
+            "definition": "Windows with partial but below-threshold attack coverage or with conflicting indicators (e.g., suspicious QBER spike but no attack ground truth) are labeled `uncertain` and can be either dropped or reserved for semi-supervised use.",
+            "parameters": {
+              "store_uncertain_separately": true
+            }
+          }
+        ],
+        "multiclass_labels": {
+          "optional": true,
+          "values": [
+            "clean",
+            "attack_eavesdrop",
+            "attack_jamming",
+            "attack_misconfig",
+            "other_failure"
+          ],
+          "derivation": "Map from scenario_meta attack_type and failure_type fields to categorical labels; non-attack failure modes get dedicated labels where distinguishable."
+        },
+        "label_consistency_checks": [
+          "Verify that attack windows cover the attack intervals reported in scenario metadata within a tolerance (e.g., \u00b11 window stride).",
+          "Ensure no windows overlapping known attacks are labeled `clean` unless deliberately excluded as `uncertain`."
+        ]
+      },
+      "6_imbalance_handling": {
+        "goal": "Address scarcity of attack windows relative to clean windows while keeping evaluation realistic and avoiding leakage.",
+        "techniques": [
+          {
+            "name": "class_weights",
+            "description": "Compute class weights inversely proportional to class frequencies in the training split only; store in dataset metadata for downstream models.",
+            "formula": "w_c = N_total / (num_classes * N_c)"
+          },
+          {
+            "name": "attack_oversampling",
+            "description": "Optionally oversample minority attack windows in the training set via simple random oversampling or SMOTE-like algorithms applied to features only (no test/validation oversampling).",
+            "parameters": {
+              "oversample_ratio": "e.g., target attack:clean ratio of 1:4",
+              "method": "random_oversample or smote"
+            }
+          },
+          {
+            "name": "time_blocking_for_eval",
+            "description": "Evaluation splits remain naturally imbalanced to reflect realistic prevalence; imbalance handling is not applied to validation/test splits."
+          }
+        ]
+      },
+      "7_data_quality_and_leakage_checks": {
+        "goal": "Automatically detect common data issues before exporting final datasets.",
+        "checks": [
+          "Missing values per feature, reported as counts and fractions per split.",
+          "Constant or near-constant features that may be dropped.",
+          "Feature-target correlations that appear suspiciously high due to leakage (e.g., explicit attack flags included as features).",
+          "Temporal overlap across splits when grouping by run_id or time (e.g., ensuring runs or time blocks assigned to train are not reused in validation/test).",
+          "Duplicate window_ids across splits.",
+          "Label distribution per split (class counts and proportions)."
+        ],
+        "leakage_prevention": [
+          "Exclude direct attack flags or obviously post-hoc indicators (e.g., `attack_detected`, `incident_id`) from feature set.",
+          "Ensure that normalization and imbalance parameters are derived solely from training data.",
+          "Ensure group-based splitting by run_id or link_id when required by experimental design."
+        ]
+      },
+      "8_deterministic_splitting_and_versioning": {
+        "goal": "Provide reproducible data splits and traceable dataset versions tied to configuration and raw inputs.",
+        "splitting_strategies": [
+          {
+            "name": "run_based_split",
+            "description": "Partition full runs into train/validation/test sets so that telemetry from a single run_id never appears in more than one split.",
+            "default_proportions": {
+              "train": 0.6,
+              "val": 0.2,
+              "test": 0.2
+            }
+          },
+          {
+            "name": "time_based_split_within_run",
+            "description": "Within each run_id, partition windows into train/validation/test based on time, preserving order (e.g., first 60% of time for training, next 20% validation, last 20% test).",
+            "conditions": "Used when there are few distinct runs but long time series per run."
+          }
+        ],
+        "determinism": {
+          "random_seed": 42,
+          "shuffling": "If any operation requires shuffling (e.g., oversampling or random split selection among runs), it must use the fixed random_seed."
+        },
+        "versioning": {
+          "dataset_id": "string slug, e.g., `ch7-v1-qc-fused-5s-win`",
+          "metadata_file": "JSON file saved as `datasets/<dataset_id>/metadata.json` capturing configuration, raw input hashes, feature schema, and splitting strategy.",
+          "storage_layout": [
+            "datasets/<dataset_id>/train.parquet",
+            "datasets/<dataset_id>/val.parquet",
+            "datasets/<dataset_id>/test.parquet",
+            "datasets/<dataset_id>/uncertain.parquet (optional)",
+            "datasets/<dataset_id>/class_weights.json",
+            "datasets/<dataset_id>/feature_stats.json"
+          ]
+        }
+      }
+    }
+  },
+  "workloads": [
+    {
+      "name": "W1_5s_sliding_windows_binary_attack_detection",
+      "description": "Transform raw telemetry into 5-second sliding windows for each link, label windows as attack vs. clean, and export balanced train/validation/test splits with preserved temporal order.",
+      "inputs": {
+        "raw_telemetry_pattern": "data/sim_runs/run_*/telemetry.parquet",
+        "scenario_meta_pattern": "data/sim_runs/run_*/scenario_meta.json"
+      },
+      "pipeline_config": {
+        "window_type": "fixed_sliding_time_window",
+        "window_length_seconds": 5,
+        "window_stride_seconds": 1,
+        "attack_coverage_threshold": 0.3,
+        "label_mode": "binary_attack_vs_clean",
+        "handle_uncertain": "exclude_from_main_splits_but_export_separately",
+        "imbalance_strategy": "class_weights_only",
+        "split_strategy": "run_based_split",
+        "split_proportions": {
+          "train": 0.6,
+          "val": 0.2,
+          "test": 0.2
+        },
+        "random_seed": 42
+      },
+      "baseline_variant": "Apply the same selection of runs but skip windowing/aggregation and instead treat individual telemetry records as samples, then produce naive random 70/15/15 splits."
+    },
+    {
+      "name": "W2_event_centered_eavesdropping_vs_clean",
+      "description": "Construct event-centered windows around eavesdropping attacks and compare them to benign windows of equivalent size for a targeted binary classification task.",
+      "inputs": {
+        "raw_telemetry_pattern": "data/sim_runs/run_*/telemetry.parquet",
+        "scenario_meta_pattern": "data/sim_runs/run_*/scenario_meta.json"
+      },
+      "pipeline_config": {
+        "window_type": "event_centered_window",
+        "pre_event_duration_seconds": 10,
+        "post_event_duration_seconds": 10,
+        "event_filter": "attack_type == 'eavesdrop'",
+        "label_mode": "binary_eavesdrop_vs_clean",
+        "handle_uncertain": "reserve_for_analysis_only",
+        "imbalance_strategy": "attack_oversampling_and_class_weights",
+        "oversample_method": "random_oversample",
+        "oversample_target_ratio": "1:2",
+        "split_strategy": "run_based_split",
+        "random_seed": 42
+      },
+      "baseline_variant": "Use all telemetry rows occurring within the [pre_event, post_event] intervals as attack samples and a random subset of benign rows as clean samples; no windowing or feature aggregation."
+    },
+    {
+      "name": "W3_multiclass_attack_type_classification",
+      "description": "Generate windowed datasets labeled by attack type (eavesdrop, jamming, misconfiguration) vs. clean, for multiclass supervised learning.",
+      "inputs": {
+        "raw_telemetry_pattern": "data/sim_runs/run_*/telemetry.parquet",
+        "scenario_meta_pattern": "data/sim_runs/run_*/scenario_meta.json"
+      },
+      "pipeline_config": {
+        "window_type": "fixed_sliding_time_window",
+        "window_length_seconds": 5,
+        "window_stride_seconds": 2,
+        "label_mode": "multiclass_by_attack_type",
+        "handle_uncertain": "exclude_from_main_splits",
+        "imbalance_strategy": "class_weights_only",
+        "split_strategy": "time_based_split_within_run",
+        "random_seed": 42
+      },
+      "baseline_variant": "Use single telemetry rows sampled at fixed intervals (e.g., every second) with instantaneous labels, no aggregation or temporal features."
+    }
+  ],
+  "controls": {
+    "comparability": [
+      "Use identical raw input runs for baseline and treatment by applying the same run selection logic.",
+      "Where possible, ensure that downstream ML models used to evaluate quality are identical in architecture and hyperparameters across baseline and treatment.",
+      "Use the same random_seed (42) for any stochastic operation in both pipelines.",
+      "Ensure that train/validation/test splits for baseline and treatment are comparable by run_id membership (e.g., if a run_id is in the training set for the treatment, all its rows are also in the training set for the baseline)."
+    ],
+    "data_integrity": [
+      "Verify that record counts and time ranges per run_id are preserved across baseline and treatment prior to transformation (no unintentional row loss).",
+      "Validate that quantum metrics distributions in raw data match between baseline and treatment inputs."
+    ],
+    "implementation": [
+      "Implement both baseline and treatment pipelines in Python using the same versions of pandas, NumPy, and supporting libraries.",
+      "Run both pipelines on the same hardware or environment profile to ensure comparable performance measurements where collected."
+    ]
+  },
+  "metrics": [
+    {
+      "name": "num_samples_train",
+      "unit": "count_of_rows",
+      "description": "Number of training samples (windows or raw rows) in the exported training set."
+    },
+    {
+      "name": "num_samples_val",
+      "unit": "count_of_rows",
+      "description": "Number of validation samples."
+    },
+    {
+      "name": "num_samples_test",
+      "unit": "count_of_rows",
+      "description": "Number of test samples."
+    },
+    {
+      "name": "class_distribution_train",
+      "unit": "per_class_counts_and_proportions",
+      "description": "Distribution of labels in the training set, reported as a mapping from class to (count, proportion)."
+    },
+    {
+      "name": "class_distribution_val",
+      "unit": "per_class_counts_and_proportions",
+      "description": "Label distribution in the validation set."
+    },
+    {
+      "name": "class_distribution_test",
+      "unit": "per_class_counts_and_proportions",
+      "description": "Label distribution in the test set."
+    },
+    {
+      "name": "num_features",
+      "unit": "count_of_columns",
+      "description": "Number of feature columns in the final dataset (excluding ID and label columns)."
+    },
+    {
+      "name": "missing_value_rate_per_feature",
+      "unit": "fraction_per_feature",
+      "description": "For each feature, the fraction of samples with missing values, per split."
+    },
+    {
+      "name": "temporal_leakage_indicator",
+      "unit": "boolean_or_fraction",
+      "description": "Indicator or fraction of run_ids/time blocks that appear in more than one split (should be zero in treatment)."
+    },
+    {
+      "name": "split_reproducibility",
+      "unit": "boolean",
+      "description": "Whether rerunning the pipeline with the same configuration and seed yields identical checksums for exported split files."
+    },
+    {
+      "name": "feature_target_correlation_max",
+      "unit": "pearson_correlation_coefficient",
+      "description": "Maximum absolute Pearson correlation between any single feature and the label in the training set, used as a heuristic to spot potential leakage."
+    },
+    {
+      "name": "dataset_build_time",
+      "unit": "seconds",
+      "description": "Wall-clock time to execute the pipeline and produce all splits and metadata, per workload."
+    },
+    {
+      "name": "downstream_baseline_roc_auc",
+      "unit": "auc_value",
+      "description": "ROC-AUC of a fixed simple ML baseline model (e.g., RandomForestClassifier) trained on the produced training data and evaluated on the test set. Used as a proxy for dataset utility.",
+      "note": "This metric is optional and measured when integrating with Chapter 8 experiments."
+    },
+    {
+      "name": "downstream_baseline_pr_auc",
+      "unit": "auc_value",
+      "description": "Precision-Recall AUC for the same baseline model as above on the test set."
+    }
+  ],
+  "success_criteria": {
+    "data_quality_and_leakage": [
+      "For treatment datasets, `temporal_leakage_indicator` must be false (no run_ids or time blocks shared across train/validation/test splits).",
+      "For treatment datasets, `missing_value_rate_per_feature` must be below a configurable threshold (e.g., < 5%) for all core features, or affected features must be clearly documented and imputed.",
+      "Direct ground-truth flags (e.g., `attack_flag`, `attack_type_raw`) must not appear in the feature set; if present in raw data, they are removed or reserved only for labels.",
+      "`split_reproducibility` must evaluate to true: repeated runs with identical configuration produce identical checksums/hashes of the dataset files."
+    ],
+    "class_balance_and_labeling": [
+      "For workloads using class weighting, computed class weights must be finite and positive for all classes present in the training set.",
+      "In binary tasks, the minority class (attack) must constitute at least a minimal presence in the training set (e.g., > 1% of samples), achieved via oversampling or scenario selection as needed.",
+      "No windows overlapping known attack intervals should be labeled `clean` unless explicitly categorized as `uncertain` and excluded from main splits."
+    ],
+    "comparative_performance": [
+      "Treatment-based datasets must not degrade downstream baseline ROC-AUC and PR-AUC relative to the baseline dataset for the same ML model and raw inputs. A non-negative difference is considered acceptable, with a targeted improvement of at least +0.02 in ROC-AUC where feasible.",
+      "Number of features in the treatment dataset must be reasonable for the audience\u2019s operational constraints (e.g., <= 200 features) while maintaining or improving downstream performance."
+    ],
+    "operational_reproducibility": [
+      "All configuration required to rebuild a dataset (window parameters, labels, imbalance strategy, splitting strategy, seeds, and version tags) must be captured in `metadata.json` under the dataset directory.",
+      "The pipeline must support reruns on new raw simulation outputs by changing only configuration values, not core code."
+    ]
+  },
+  "failure_modes": [
+    {
+      "name": "label_leakage_via_future_information",
+      "description": "Features in a window inadvertently depend on telemetry from timestamps after the window end (e.g., including post-attack recovery information for pre-attack windows), enabling unrealistically high model performance.",
+      "detection": "Temporal leakage checks comparing window time ranges against underlying attack intervals and verifying that only data within [window_start, window_end] is used.",
+      "mitigation": "Restrict all feature computations to lie strictly within window boundaries and remove any feature derived from future timestamps."
+    },
+    {
+      "name": "feature_includes_ground_truth",
+      "description": "Attack flags or scenario IDs inadvertently included as features rather than only as labels or grouping identifiers.",
+      "detection": "Automatic scanning of feature names for substrings like `attack`, `label`, `scenario`; computation of feature-target correlations to identify near-perfect correlation.",
+      "mitigation": "Maintain an explicit allowlist of feature names and strip any fields identified as ground truth from the feature matrix; rerun pipeline."
+    },
+    {
+      "name": "misaligned_windows_across_streams",
+      "description": "Quantum and classical telemetry are windowed differently, resulting in inconsistent or misaligned samples when fused, which can distort relationships.",
+      "detection": "Check that for each window_id, the quantum and classical aggregations use identical window_start and window_end boundaries and that sample counts per stream are reasonable.",
+      "mitigation": "Centralize window boundary generation and ensure both streams are aggregated against the same index."
+    },
+    {
+      "name": "severe_class_imbalance_unaddressed",
+      "description": "Attack windows are too rare in the training set, causing downstream models to default to predicting only the majority class.",
+      "detection": "Inspect `class_distribution_train` and verify that the minority class proportion falls below a configured threshold (e.g., < 1%).",
+      "mitigation": "Enable oversampling, adjust scenario selection to include more attack runs, or design semi-supervised experiments for anomaly detection instead of supervised attack classification."
+    },
+    {
+      "name": "non_reproducible_splits",
+      "description": "Train/validation/test splits differ across runs due to changing seeds or uncontrolled sources of randomness.",
+      "detection": "Compare file checksums or sample indices across two independent runs with the same configuration; differences indicate non-determinism.",
+      "mitigation": "Audit all uses of randomization in the pipeline and ensure they are seeded via a single configuration parameter; avoid operations with non-deterministic parallelism where possible."
+    },
+    {
+      "name": "skewed_feature_statistics_due_to_including_val_test",
+      "description": "Normalization statistics accidentally computed on the full dataset, leaking validation/test information into training preprocessing.",
+      "detection": "Verify that the set of samples used to compute statistics matches the training set only, by logging and cross-checking sample IDs.",
+      "mitigation": "Perform splitting before normalization, and centralize statistic computation in a component that explicitly consumes only training data."
+    },
+    {
+      "name": "overly_complex_feature_space",
+      "description": "Excessive number of features relative to the sample count, increasing risk of overfitting and impairing interpretability.",
+      "detection": "Monitor `num_features` and apply simple heuristics, e.g., `num_samples_train / num_features` below a certain ratio.",
+      "mitigation": "Introduce feature selection or dimensionality reduction, or simplify feature sets for some workloads; clearly document any reduced feature variants."
+    }
+  ],
+  "required_environment": {
+    "hardware": {
+      "minimum_cpu": "4 vCPUs",
+      "minimum_ram_gb": 16,
+      "storage": "At least 20 GB of free disk space for raw simulation outputs and multiple dataset versions.",
+      "gpu": "Not required for dataset preparation; optional for downstream ML experiments."
+    },
+    "software": {
+      "os": "Linux (Ubuntu 20.04+), macOS 12+, or Windows 10+",
+      "python_version": "3.10",
+      "python_packages": [
+        "numpy==1.26.4",
+        "pandas==2.2.2",
+        "pyarrow==16.1.0",
+        "scikit-learn==1.5.1",
+        "pyyaml==6.0.2"
+      ],
+      "optional_packages": [
+        "matplotlib==3.9.0",
+        "seaborn==0.13.2",
+        "tqdm==4.66.4"
+      ]
+    },
+    "repository_layout": {
+      "root": "https://github.com/bookauthority/ai-quantum-threat-detection-guide",
+      "relevant_paths": [
+        "simulator/  # Chapter 6 simulator implementation",
+        "data/sim_runs/  # Default location for raw telemetry and metadata outputs",
+        "pipelines/ch7_dataset_build/  # Chapter 7 dataset pipeline code",
+        "configs/ch7/  # YAML/JSON configuration files for workloads",
+        "datasets/  # Output directory for ML-ready datasets"
+      ]
+    }
+  },
+  "run_instructions": [
+    "1. Clone the repository: `git clone https://github.com/bookauthority/ai-quantum-threat-detection-guide.git` and `cd ai-quantum-threat-detection-guide`.",
+    "2. Create and activate a Python 3.10 virtual environment (e.g., using `python3.10 -m venv .venv && source .venv/bin/activate` on Unix-like systems).",
+    "3. Install required Python packages: `pip install -r requirements-ch7.txt` (where `requirements-ch7.txt` pins versions listed in the required_environment).",
+    "4. Ensure that the Chapter 6 simulator has been executed and that raw telemetry is available under `data/sim_runs/`. If not, follow Chapter 6 instructions (e.g., run `python simulator/run_simulations.py --output-root data/sim_runs --num-runs 20 --scenarios all`).",
+    "5. Inspect or create configuration files for the desired workloads under `configs/ch7/`. Example files:",
+    "   - `configs/ch7/w1_5s_sliding_binary.yaml` for W1.",
+    "   - `configs/ch7/w2_event_centered_eavesdrop.yaml` for W2.",
+    "   - `configs/ch7/w3_multiclass_attack_types.yaml` for W3.",
+    "6. To generate the baseline (naive) dataset for a workload, run the baseline script. Example for W1:",
+    "   - `python pipelines/ch7_dataset_build/build_baseline_dataset.py --config configs/ch7/w1_5s_sliding_binary.yaml --output-root datasets/ --random-seed 42`.",
+    "   This script will:",
+    "   - Load raw telemetry from `data/sim_runs/` according to the config.",
+    "   - Apply the naive row-level pipeline.",
+    "   - Produce a baseline dataset directory, e.g., `datasets/ch7-w1-baseline/`, containing `train.parquet`, `val.parquet`, `test.parquet`, and `metadata.json`.",
+    "7. To generate the treatment (engineered) dataset for the same workload, run:",
+    "   - `python pipelines/ch7_dataset_build/build_dataset.py --config configs/ch7/w1_5s_sliding_binary.yaml --output-root datasets/ --dataset-id ch7-w1-qc-fused-5s-win --random-seed 42`.",
+    "   This script will:",
+    "   - Load the same raw telemetry and scenario metadata as the baseline run.",
+    "   - Apply windowing, feature engineering, labeling, imbalance handling, and splitting as specified.",
+    "   - Export ML-ready datasets under `datasets/ch7-w1-qc-fused-5s-win/` (or another dataset_id if specified).",
+    "8. Verify reproducibility by rerunning the treatment command with the same parameters and confirming that file checksums or hashes (e.g., via `sha256sum datasets/ch7-w1-qc-fused-5s-win/*.parquet`) remain unchanged.",
+    "9. (Optional) Run built-in quality and leakage checks by executing:",
+    "   - `python pipelines/ch7_dataset_build/validate_dataset.py --dataset-root datasets/ch7-w1-qc-fused-5s-win/`.",
+    "   This will compute and print metrics such as missing_value_rate_per_feature, class distributions, temporal_leakage_indicator, and feature_target_correlation_max, storing results consistent with the evidence_schema.",
+    "10. Repeat steps 6\u20139 for W2 and W3 by substituting the appropriate configuration files and dataset_id values.",
+    "11. (Optional, for end-to-end verification with Chapter 8) Train a simple baseline model on both baseline and treatment datasets and record ROC-AUC and PR-AUC to empirically compare dataset utility.",
+    "12. Archive or commit dataset metadata files (`metadata.json`, `feature_stats.json`, `class_weights.json`) alongside experiment notes to ensure traceability."
+  ],
+  "evidence_schema": {
+    "type": "object",
+    "description": "Schema for storing objective evidence and measurements from running the dataset construction experiments. No outcomes are pre-filled here; this defines the structure that actual experiment runs should populate.",
+    "properties": {
+      "experiment_id": {
+        "type": "string",
+        "description": "Identifier of the experiment configuration used, e.g., `exp-ch7-quantum-telemetry-to-ml-ready-datasets-v1`."
+      },
+      "timestamp_utc": {
+        "type": "string",
+        "format": "date-time",
+        "description": "UTC timestamp when the experiment run completed."
+      },
+      "environment": {
+        "type": "object",
+        "properties": {
+          "os": {
+            "type": "string",
+            "description": "Operating system and version."
+          },
+          "python_version": {
+            "type": "string",
+            "description": "Python interpreter version."
+          },
+          "package_versions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Mapping from package name to installed version (e.g., pandas, numpy, scikit-learn)."
+          },
+          "hardware": {
+            "type": "object",
+            "properties": {
+              "cpu_model": {
+                "type": "string"
+              },
+              "num_cores": {
+                "type": "integer"
+              },
+              "ram_gb": {
+                "type": "number"
+              }
+            }
+          }
+        }
+      },
+      "workload_id": {
+        "type": "string",
+        "description": "Identifier of the workload, e.g., `W1_5s_sliding_windows_binary_attack_detection`."
+      },
+      "variant": {
+        "type": "string",
+        "enum": [
+          "baseline",
+          "treatment"
+        ],
+        "description": "Indicates whether the recorded evidence is for the baseline or treatment pipeline."
+      },
+      "config_path": {
+        "type": "string",
+        "description": "Path to the configuration file used for this run."
+      },
+      "dataset_id": {
+        "type": "string",
+        "description": "Identifier of the produced dataset, typically matching the dataset directory name."
+      },
+      "metrics": {
+        "type": "object",
+        "properties": {
+          "num_samples_train": {
+            "type": "integer"
+          },
+          "num_samples_val": {
+            "type": "integer"
+          },
+          "num_samples_test": {
+            "type": "integer"
+          },
+          "class_distribution_train": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "count": {
+                  "type": "integer"
+                },
+                "proportion": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "class_distribution_val": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "count": {
+                  "type": "integer"
+                },
+                "proportion": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "class_distribution_test": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "count": {
+                  "type": "integer"
+                },
+                "proportion": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "num_features": {
+            "type": "integer"
+          },
+          "missing_value_rate_per_feature": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "train": {
+                  "type": "number"
+                },
+                "val": {
+                  "type": "number"
+                },
+                "test": {
+                  "type": "number"
+                }
+              }
+            },
+            "description": "For each feature name, missing value rates per split."
+          },
+          "temporal_leakage_indicator": {
+            "type": "object",
+            "properties": {
+              "has_leakage": {
+                "type": "boolean"
+              },
+              "leakage_fraction": {
+                "type": "number",
+                "description": "Fraction of run_ids or time blocks that appear in multiple splits."
+              }
+            }
+          },
+          "split_reproducibility": {
+            "type": "boolean"
+          },
+          "feature_target_correlation_max": {
+            "type": "number"
+          },
+          "dataset_build_time": {
+            "type": "number"
+          },
+          "downstream_baseline_roc_auc": {
+            "type": "number",
+            "description": "If measured by training a standard baseline model using this dataset."
+          },
+          "downstream_baseline_pr_auc": {
+            "type": "number",
+            "description": "If measured by training a standard baseline model using this dataset."
+          }
+        }
+      },
+      "checksums": {
+        "type": "object",
+        "properties": {
+          "train_parquet_sha256": {
+            "type": "string"
+          },
+          "val_parquet_sha256": {
+            "type": "string"
+          },
+          "test_parquet_sha256": {
+            "type": "string"
+          },
+          "metadata_json_sha256": {
+            "type": "string"
+          }
+        },
+        "description": "SHA-256 checksums for key output files, used to verify reproducibility."
+      },
+      "notes": {
+        "type": "string",
+        "description": "Free-text field for any qualitative observations, anomalies, or deviations from the planned protocol."
+      }
+    },
+    "required": [
+      "experiment_id",
+      "timestamp_utc",
+      "environment",
+      "workload_id",
+      "variant",
+      "config_path",
+      "dataset_id",
+      "metrics"
+    ]
+  }
+}
